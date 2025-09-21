@@ -1,0 +1,15 @@
+build/
+*.pro.user
+*.user
+*.log
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.d
+*.moc
+*.qrc
+Makefile*
