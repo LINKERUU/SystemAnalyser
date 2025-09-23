@@ -3,30 +3,19 @@
 #include <QDebug>
 #include <QProcess>
 #include <QMessageBox>
-<<<<<<< HEAD
 #include <QString> // Для QString::fromWCharArray
-=======
-#include <QString>
->>>>>>> master
+
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <powrprof.h>
 #include <strsafe.h>
 #pragma comment(lib, "powrprof.lib")
 #pragma comment(lib, "user32.lib")
-<<<<<<< HEAD
 #pragma comment(lib, "advapi32.lib") // Для RegOpenKeyExA и RegQueryValueExA
 #endif
 
 PowerMonitor::PowerMonitor(QObject *parent) : QObject(parent),
     lastBatteryLevel(0), batteryLevel(0), powerSavingEnabled(false),
-=======
-#pragma comment(lib, "advapi32.lib")
-#endif
-
-PowerMonitor::PowerMonitor(QObject *parent) : QObject(parent),
-    lastBatteryLevel(0), batteryLevel(0),
->>>>>>> master
     isBatteryDischarging(false), lastRemainingSeconds(0) {
     timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &PowerMonitor::updateData);
@@ -36,12 +25,10 @@ PowerMonitor::PowerMonitor(QObject *parent) : QObject(parent),
     remainingBatteryTime = QTime(0, 0, 0);
     dischargeElapsedTimer.invalidate();
     remainingElapsedTimer.invalidate();
+    currentPowerMode = "Неизвестно";
 
 #ifdef Q_OS_WIN
-<<<<<<< HEAD
     // Предотвращаем автоматический переход в спящий режим
-=======
->>>>>>> master
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
 #endif
 }
@@ -55,11 +42,7 @@ PowerMonitor::~PowerMonitor() {
 
 void PowerMonitor::startMonitoring() {
     updateData();
-<<<<<<< HEAD
     timer->start(1000); // Обновление каждую секунду
-=======
-    timer->start(1000);
->>>>>>> master
 }
 
 void PowerMonitor::stopMonitoring() {
@@ -72,17 +55,13 @@ void PowerMonitor::triggerSleep() {
 #ifdef Q_OS_WIN
     if (!timer) return;
 
-<<<<<<< HEAD
     qDebug() << "Инициируется спящий режим.";
 
-=======
->>>>>>> master
     bool wasTimerActive = timer->isActive();
     if (wasTimerActive) timer->stop();
 
     SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, (LPARAM)2);
 
-<<<<<<< HEAD
     if (!LockWorkStation()) {
         qDebug() << "Не удалось заблокировать рабочую станцию. Код ошибки:" << GetLastError();
     } else {
@@ -90,14 +69,9 @@ void PowerMonitor::triggerSleep() {
     }
 
     if (wasTimerActive) timer->start();
-=======
-    LockWorkStation();
-
-    if (wasTimerActive) timer->start(1000);
 #else
     QMessageBox::warning(nullptr, "Ошибка спящего режима",
                          "Эмуляция спящего режима поддерживается только в Windows.");
->>>>>>> master
 #endif
 }
 
@@ -125,10 +99,7 @@ void PowerMonitor::updateData() {
 #ifdef Q_OS_WIN
     SYSTEM_POWER_STATUS status;
     if (GetSystemPowerStatus(&status)) {
-<<<<<<< HEAD
         // Источник питания
-=======
->>>>>>> master
         QString newPowerSource = (status.ACLineStatus == 1) ? "Сеть" : "Батарея";
         if (newPowerSource != powerSource) {
             powerSource = newPowerSource;
@@ -141,14 +112,10 @@ void PowerMonitor::updateData() {
                 if (systemSeconds != -1 && systemSeconds != 0xFFFFFFFF) {
                     lastRemainingSeconds = systemSeconds;
                 } else {
-<<<<<<< HEAD
                     // Рассчитываем оставшееся время на основе уровня заряда
                     int batteryPercent = status.BatteryLifePercent <= 100 ? status.BatteryLifePercent : 100;
                     // Предполагаем, что полный заряд (100%) дает 4 часа (14400 секунд)
                     // Это значение можно настроить на основе характеристик батареи
-=======
-                    int batteryPercent = status.BatteryLifePercent <= 100 ? status.BatteryLifePercent : 100;
->>>>>>> master
                     const int fullBatteryLifeSeconds = 14400;
                     lastRemainingSeconds = (batteryPercent * fullBatteryLifeSeconds) / 100;
                 }
@@ -170,10 +137,7 @@ void PowerMonitor::updateData() {
             }
         }
 
-<<<<<<< HEAD
         // Уровень заряда батареи
-=======
->>>>>>> master
         int newBatteryLevel = (status.BatteryLifePercent <= 100) ? status.BatteryLifePercent : batteryLevel;
         if (newBatteryLevel != batteryLevel) {
             lastBatteryLevel = batteryLevel;
@@ -181,10 +145,7 @@ void PowerMonitor::updateData() {
             emit batteryLevelChanged(batteryLevel);
         }
 
-<<<<<<< HEAD
         // Время работы от батареи
-=======
->>>>>>> master
         if (isBatteryDischarging && dischargeElapsedTimer.isValid()) {
             qint64 elapsedMs = dischargeElapsedTimer.elapsed();
             int elapsedSeconds = elapsedMs / 1000;
@@ -195,17 +156,11 @@ void PowerMonitor::updateData() {
             }
         }
 
-<<<<<<< HEAD
         // Оставшееся время работы
         if (isBatteryDischarging && remainingElapsedTimer.isValid()) {
             int systemSeconds = status.BatteryLifeTime;
             if (systemSeconds != -1 && systemSeconds != 0xFFFFFFFF && systemSeconds != lastRemainingSeconds) {
                 // Обновляем, если системное время изменилось
-=======
-        if (isBatteryDischarging && remainingElapsedTimer.isValid()) {
-            int systemSeconds = status.BatteryLifeTime;
-            if (systemSeconds != -1 && systemSeconds != 0xFFFFFFFF && systemSeconds != lastRemainingSeconds) {
->>>>>>> master
                 lastRemainingSeconds = systemSeconds;
                 remainingElapsedTimer.restart();
                 QTime newRemainingTime(systemSeconds / 3600, (systemSeconds % 3600) / 60, systemSeconds % 60);
@@ -214,10 +169,7 @@ void PowerMonitor::updateData() {
                     emit remainingBatteryTimeChanged(remainingBatteryTime);
                 }
             } else {
-<<<<<<< HEAD
                 // Интерполяция от последнего известного времени
-=======
->>>>>>> master
                 qint64 elapsedMs = remainingElapsedTimer.elapsed();
                 int elapsedSeconds = elapsedMs / 1000;
                 int newRemainingSeconds = lastRemainingSeconds - elapsedSeconds;
@@ -230,10 +182,6 @@ void PowerMonitor::updateData() {
             }
         }
 
-<<<<<<< HEAD
-        // Тип батареи
-        QString newBatteryType = "Li-ion";
-=======
         // Тип батареи (чтение из реестра)
         QString newBatteryType = "Неизвестно";
         HKEY hKey;
@@ -267,16 +215,12 @@ void PowerMonitor::updateData() {
         if (newBatteryType != "Li-ion" && newBatteryType != "NiMH" && newBatteryType != "NiCd") {
             newBatteryType = (powerSource == "Батарея") ? "Li-ion" : "Неизвестно";
         }
->>>>>>> master
         if (newBatteryType != batteryType) {
             batteryType = newBatteryType;
             emit batteryTypeChanged(batteryType);
         }
 
-<<<<<<< HEAD
         // Статус режима энергосбережения - чтение personality GUID из реестра как REG_SZ
-=======
->>>>>>> master
         QString newPowerMode = "Неизвестно";
         bool newPowerSavingEnabled = false;
         GUID *activeSchemeGuid = nullptr;
@@ -349,7 +293,7 @@ void PowerMonitor::updateData() {
     }
 #else
     powerSource = "Неизвестно";
-    batteryType = "Неизвестно";
+    batteryType = "Li-ion";
     batteryLevel = 0;
     powerSavingEnabled = false;
     currentPowerMode = "Неизвестно";
