@@ -2,13 +2,17 @@
 #include <QPixmap>
 #include <QTransform>
 #include <QIcon>
+#include <QDir>
 #include "mainwindow.h"
 
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
 
-    QPixmap pixmap("D:/Coding/C++/SystmeAnalyser/assets/icon.svg");
+    QString sourceFilePath = __FILE__;
+    QDir sourceDir(sourceFilePath);
+
+    QPixmap pixmap(sourceDir.absoluteFilePath("../assets/") + "/icon.svg");
     QTransform transform;
     QPixmap rotatedPixmap = pixmap.transformed(transform, Qt::SmoothTransformation);
 

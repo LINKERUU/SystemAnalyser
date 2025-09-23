@@ -2,15 +2,17 @@ QT += core gui widgets svg  # svg для анимаций
 
 CONFIG += c++17
 
-TARGET = SystmeAnalyser
+TARGET = SystemAnalyser
 TEMPLATE = app
 
 SOURCES += \
+    envirconfigpci.cpp \
     main.cpp \
     mainwindow.cpp \
     powermonitor.cpp
 
 HEADERS += \
+    envirconfigpci.h \
     mainwindow.h \
     powermonitor.h
 

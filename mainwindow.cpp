@@ -10,13 +10,12 @@
 #include <QDir>
 #include <QFile>
 #include <QCoreApplication>
+#include <QTableWidget>
+#include <QHeaderView> // Added for QTableWidget::horizontalHeader()
 
 QString getProjectAssetsPath() {
-    // Получаем путь к текущему исходному файлу (mainwindow.cpp)
     QString sourceFilePath = __FILE__;
     QDir sourceDir(sourceFilePath);
-    // Предполагаем, что mainwindow.cpp находится в корне проекта SystemAnalyser, а assets — там же
-    // Если mainwindow.cpp в src, измените на "../assets/"
     return sourceDir.absoluteFilePath("../assets/") + "/";
 }
 
@@ -86,14 +85,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
 
     QString assetsPath = getProjectAssetsPath();
 
-    QString cursorPath = assetsPath + "carrot.svg";
-    if (QFile::exists(cursorPath)) {
-        QPixmap pixmap(cursorPath);
-        QCursor customCursor(pixmap, 0, 0);
-        this->setCursor(customCursor);
-    } else {
-        qDebug() << "Cursor file not found:" << cursorPath << "- Using default cursor";
-    }
+
 
     for (int i = 0; i < labNames.size(); ++i) {
         QPushButton *btn = new QPushButton(labNames[i], animationLabel);
@@ -120,7 +112,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     }
 
     connect(lab1Button, &QPushButton::clicked, this, &MainWindow::showPowerInfo);
-    connect(lab2Button, &QPushButton::clicked, this, &MainWindow::startSadAnimation);
+    connect(lab2Button, &QPushButton::clicked, this, &MainWindow::showPCIInfo);
 
     drawBackground();
 
@@ -141,7 +133,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     welcomeTimer->start(2000);
 
     powerMonitor = new PowerMonitor(this);
+    pciMonitor = new envirconfigPCI(); // Removed parent parameter
     setupPowerInfoPanel();
+    setupPCIInfoPanel();
 
     connect(powerMonitor, &PowerMonitor::powerSourceChanged, this, [this](const QString &type) {
         updatePowerInfo(type, powerMonitor->getBatteryType(), powerMonitor->getBatteryLevel(),
@@ -294,6 +288,103 @@ void MainWindow::setupPowerInfoPanel() {
     powerInfoPanel->hide();
 }
 
+void MainWindow::setupPCIInfoPanel() {
+    pciInfoPanel = new QWidget(animationLabel);
+    pciInfoPanel->setFixedSize(500, 640);
+    pciInfoPanel->move(700, 30);
+    pciInfoPanel->setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;");
+
+    QVBoxLayout *panelLayout = new QVBoxLayout(pciInfoPanel);
+    panelLayout->setContentsMargins(20, 20, 20, 20);
+    panelLayout->setSpacing(20);
+
+    QFont labelFont("Arial", 16);
+
+    QLabel *titleLabel = new QLabel("Устройства PCI", pciInfoPanel);
+    titleLabel->setFont(QFont("Arial", 20, QFont::Bold));
+    titleLabel->setAlignment(Qt::AlignCenter);
+    titleLabel->setStyleSheet("background-color:transparent;");
+
+    pciTable = new QTableWidget(pciInfoPanel);
+    pciTable->setRowCount(0);
+    pciTable->setColumnCount(5); // Changed to 5 columns
+    pciTable->setHorizontalHeaderLabels({"№", "VendorID", "DeviceID", "Название", "Шина"});
+    pciTable->setStyleSheet("background-color: transparent; font-size: 14px;");
+    pciTable->setColumnWidth(0, 50);
+    pciTable->setColumnWidth(1, 100);
+    pciTable->setColumnWidth(2, 100);
+    pciTable->setColumnWidth(3, 150);
+    pciTable->setColumnWidth(4, 100);
+    pciTable->horizontalHeader()->setStretchLastSection(true);
+    pciTable->setSelectionMode(QAbstractItemView::NoSelection);
+    pciTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+    QPushButton *backButton = new QPushButton("Назад", pciInfoPanel);
+    backButton->setFixedSize(150, 50);
+    backButton->setStyleSheet(R"(
+        QPushButton {
+            background-color: rgba(74, 144, 226, 220);
+            color: white;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            padding: 10px;
+        }
+        QPushButton:hover {
+            background-color: rgba(53, 122, 189, 220);
+        }
+        QPushButton:pressed {
+            background-color: rgba(44, 90, 160, 240);
+        }
+    )");
+
+    panelLayout->addWidget(titleLabel);
+    panelLayout->addWidget(pciTable);
+    panelLayout->addStretch();
+    panelLayout->addWidget(backButton, 0, Qt::AlignCenter);
+
+    connect(backButton, &QPushButton::clicked, this, &MainWindow::hidePCIInfo);
+
+    pciInfoPanel->hide();
+}
+
+void MainWindow::showPCIInfo() {
+    frameTimer->stop();
+    resetTimer->stop();
+    lab1Activated = false;
+    powerInfoPanel->hide();
+    for (QPushButton *btn : labButtons) {
+        btn->hide();
+    }
+    pciInfoPanel->show();
+
+    QList<PCIDevice> devices = pciMonitor->getPCIDevices();
+    pciTable->setRowCount(devices.size());
+    for (int i = 0; i < devices.size(); ++i) {
+        pciTable->setItem(i, 0, new QTableWidgetItem(QString::number(i + 1)));
+        pciTable->setItem(i, 1, new QTableWidgetItem(devices[i].vendorID));
+        pciTable->setItem(i, 2, new QTableWidgetItem(devices[i].deviceID));
+        pciTable->setItem(i, 3, new QTableWidgetItem(devices[i].title));
+        pciTable->setItem(i, 4, new QTableWidgetItem(devices[i].busInfo));
+    }
+
+    drawBackground(true);
+    currentAnimationType = Sad;
+    startSadAnimation();
+}
+
+void MainWindow::hidePCIInfo() {
+    lab1Activated = false;
+    frameTimer->stop();
+    resetTimer->stop();
+    pciInfoPanel->hide();
+    for (QPushButton *btn : labButtons) {
+        btn->show();
+    }
+    currentAnimationType = None;
+    drawBackground();
+}
+
 void MainWindow::loadSadFrames() {
     QString assetsPath = getProjectAssetsPath();
     framePaths.clear();
@@ -417,7 +508,7 @@ void MainWindow::drawBackground(bool center) {
     if (QFile::exists(framePath)) {
         QSvgRenderer renderer(framePath);
         const QSize kroshSize(276, 386);
-        qreal xPos = lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0;
+        qreal xPos = (lab1Activated || pciInfoPanel->isVisible()) ? 250 : (pix.width() - kroshSize.width()) / 2.0;
         QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
         renderer.render(&painter, targetRect);
     } else {
@@ -471,7 +562,7 @@ void MainWindow::updateFrame() {
     }
 
     const QSize kroshSize(276, 386);
-    qreal xPos = lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0;
+    qreal xPos = (lab1Activated || pciInfoPanel->isVisible()) ? 250 : (pix.width() - kroshSize.width()) / 2.0;
     QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
     renderer.render(&painter, targetRect);
 
@@ -480,7 +571,6 @@ void MainWindow::updateFrame() {
 }
 
 void MainWindow::startSadAnimation() {
-    if (!lab1Activated) return;
     loadSadFrames();
     currentFrame = 0;
     currentAnimationType = Sad;
@@ -489,7 +579,6 @@ void MainWindow::startSadAnimation() {
 }
 
 void MainWindow::startEatAnimation() {
-    if (!lab1Activated) return;
     loadEatFrames();
     currentFrame = 0;
     currentAnimationType = Eat;
@@ -576,7 +665,7 @@ void MainWindow::activatePowerInfoPanel() {
         btn->hide();
     }
     powerInfoPanel->show();
-    drawBackground();
+    drawBackground(true);
     frameTimer->stop();
     resetTimer->stop();
     if (powerMonitor->getPowerSourceType() == "Сеть") {
