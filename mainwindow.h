@@ -30,7 +30,7 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
-    enum AnimationType { None, Eat, Sad, Welcome, Blink, Boredom };
+    enum AnimationType { None, Eat, Sad, Welcome, Blink, Boredom, Basketball, Pointer };
 
 private slots:
     void updateFrame();
@@ -38,6 +38,8 @@ private slots:
     void startEatAnimation();
     void startWelcomeAnimation();
     void startBoredomAnimation();
+    void startBasketballAnimation();
+    void startPointerAnimation();
     void startBlinkAnimation();
     void restorePreviousAnimation(AnimationType prevType);
     void showPowerInfo();
@@ -52,15 +54,18 @@ private slots:
     void hidePCIInfo();
 
 private:
-    void drawBackground(bool center = false);
+    void drawBackground();
     void loadSadFrames();
     void loadEatFrames();
     void loadWelcomeFrames();
     void loadBlinkFrames();
     void loadBoredomFrames();
+    void loadBasketballFrames();
+    void loadPointerFrames() ;
     void setupPowerInfoPanel();
     void setupPCIInfoPanel();
     void activatePowerInfoPanel();
+    void activatePCIInfoPanel();
 
     QLabel *animationLabel;
     QTimer *frameTimer;
@@ -69,6 +74,7 @@ private:
     QStringList framePaths;
     int currentFrame;
     bool isEatAnimationInfinite;
+    bool isPointerAnimationInfinite;
     bool lab1Activated;
     AnimationType currentAnimationType;
     PowerMonitor *powerMonitor;

@@ -3,6 +3,9 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QPixmap>
+#include <qclipboard.h>
+#include <QShortcut>
+#include <qguiapplication.h>
 #include <QPainter>
 #include <QSvgRenderer>
 #include <QLabel>
@@ -11,7 +14,8 @@
 #include <QFile>
 #include <QCoreApplication>
 #include <QTableWidget>
-#include <QHeaderView> // Added for QTableWidget::horizontalHeader()
+#include <QHeaderView>
+#include <QFontMetrics>
 
 QString getProjectAssetsPath() {
     QString sourceFilePath = __FILE__;
@@ -85,8 +89,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
 
     QString assetsPath = getProjectAssetsPath();
 
-
-
     for (int i = 0; i < labNames.size(); ++i) {
         QPushButton *btn = new QPushButton(labNames[i], animationLabel);
         btn->setFixedSize(160, 40);
@@ -133,9 +135,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     welcomeTimer->start(2000);
 
     powerMonitor = new PowerMonitor(this);
-    pciMonitor = new envirconfigPCI(); // Removed parent parameter
+    pciMonitor = new envirconfigPCI();
     setupPowerInfoPanel();
     setupPCIInfoPanel();
+
+    connect(pciTable->horizontalHeader(), &QHeaderView::sectionResized, this, [=](int logicalIndex, int oldSize, int newSize){
+        if (logicalIndex == 3) { // Столбец "Название"
+            QFontMetrics metrics(pciTable->font());
+            for (int row = 0; row < pciTable->rowCount(); ++row) {
+                QTableWidgetItem* item = pciTable->item(row, 3);
+                if (!item) continue;
+                QString fullText = item->data(Qt::UserRole).toString(); // Полный текст
+                QString elided = metrics.elidedText(fullText, Qt::ElideRight, newSize - 10); // -10 для паддинга
+                item->setText(elided);
+            }
+        }
+    });
 
     connect(powerMonitor, &PowerMonitor::powerSourceChanged, this, [this](const QString &type) {
         updatePowerInfo(type, powerMonitor->getBatteryType(), powerMonitor->getBatteryLevel(),
@@ -195,7 +210,7 @@ void MainWindow::setupPowerInfoPanel() {
     powerInfoPanel = new QWidget(animationLabel);
     powerInfoPanel->setFixedSize(500, 640);
     powerInfoPanel->move(700, 30);
-    powerInfoPanel->setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;");
+    powerInfoPanel->setStyleSheet("background-color: rgba(255, 255, 255, 220); border-radius: 12px; border: 1px solid rgba(74, 144, 226, 100);");
 
     QVBoxLayout *panelLayout = new QVBoxLayout(powerInfoPanel);
     panelLayout->setContentsMargins(20, 20, 20, 20);
@@ -206,30 +221,30 @@ void MainWindow::setupPowerInfoPanel() {
     titleLabel = new QLabel("Энергопитание", powerInfoPanel);
     titleLabel->setFont(QFont("Arial", 20, QFont::Bold));
     titleLabel->setAlignment(Qt::AlignCenter);
-    titleLabel->setStyleSheet("background-color:transparent;");
+    titleLabel->setStyleSheet("background-color: transparent; color: #2C5AA0; border:none;");
 
     batteryWidget = new BatteryWidget(powerInfoPanel);
-    batteryWidget->setStyleSheet("background-color:transparent;");
+    batteryWidget->setStyleSheet("background-color: transparent; border:none;");
 
     powerSourceLabel = new QLabel("Тип энергопитания: Неизвестно", powerInfoPanel);
     powerSourceLabel->setFont(labelFont);
-    powerSourceLabel->setStyleSheet("background-color:transparent;");
+    powerSourceLabel->setStyleSheet("background-color: transparent; border:none;");
 
     batteryTypeLabel = new QLabel("Тип батареи: Неизвестно", powerInfoPanel);
     batteryTypeLabel->setFont(labelFont);
-    batteryTypeLabel->setStyleSheet("background-color:transparent;");
+    batteryTypeLabel->setStyleSheet("background-color: transparent; border:none;");
 
     powerModeStatusLabel = new QLabel("Режим работы: Неизвестно", powerInfoPanel);
     powerModeStatusLabel->setFont(labelFont);
-    powerModeStatusLabel->setStyleSheet("background-color:transparent;");
+    powerModeStatusLabel->setStyleSheet("background-color: transparent; border:none;");
 
     dischargeDurationLabel = new QLabel("Время работы: 00:00:00", powerInfoPanel);
     dischargeDurationLabel->setFont(labelFont);
-    dischargeDurationLabel->setStyleSheet("background-color:transparent;");
+    dischargeDurationLabel->setStyleSheet("background-color: transparent; border:none;");
 
     remainingBatteryTimeLabel = new QLabel("Оставшееся время: 00:00:00", powerInfoPanel);
     remainingBatteryTimeLabel->setFont(labelFont);
-    remainingBatteryTimeLabel->setStyleSheet("background-color:transparent;");
+    remainingBatteryTimeLabel->setStyleSheet("background-color: transparent; border:none;");
 
     sleepButton = new QPushButton("Спящий режим", powerInfoPanel);
     hibernateButton = new QPushButton("Гибернация", powerInfoPanel);
@@ -290,34 +305,110 @@ void MainWindow::setupPowerInfoPanel() {
 
 void MainWindow::setupPCIInfoPanel() {
     pciInfoPanel = new QWidget(animationLabel);
-    pciInfoPanel->setFixedSize(500, 640);
-    pciInfoPanel->move(700, 30);
-    pciInfoPanel->setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;");
+    pciInfoPanel->setFixedSize(770, 680);
+    pciInfoPanel->move(450, 30);
+    pciInfoPanel->setStyleSheet(R"(
+        QWidget {
+            background-color: rgba(255, 255, 255, 230);
+            border-radius: 12px;
+            border: 1px solid rgba(74, 144, 226, 120);
+        }
+    )");
 
     QVBoxLayout *panelLayout = new QVBoxLayout(pciInfoPanel);
-    panelLayout->setContentsMargins(20, 20, 20, 20);
-    panelLayout->setSpacing(20);
-
-    QFont labelFont("Arial", 16);
+    panelLayout->setContentsMargins(25, 25, 25, 25);
+    panelLayout->setSpacing(25);
 
     QLabel *titleLabel = new QLabel("Устройства PCI", pciInfoPanel);
-    titleLabel->setFont(QFont("Arial", 20, QFont::Bold));
+    titleLabel->setFont(QFont("Arial", 22, QFont::Bold));
     titleLabel->setAlignment(Qt::AlignCenter);
-    titleLabel->setStyleSheet("background-color:transparent;");
+    titleLabel->setStyleSheet("background-color: transparent; border:none; color: #2C5AA0;");
 
     pciTable = new QTableWidget(pciInfoPanel);
     pciTable->setRowCount(0);
-    pciTable->setColumnCount(5); // Changed to 5 columns
+    pciTable->setColumnCount(5);
     pciTable->setHorizontalHeaderLabels({"№", "VendorID", "DeviceID", "Название", "Шина"});
-    pciTable->setStyleSheet("background-color: transparent; font-size: 14px;");
-    pciTable->setColumnWidth(0, 50);
-    pciTable->setColumnWidth(1, 100);
-    pciTable->setColumnWidth(2, 100);
-    pciTable->setColumnWidth(3, 150);
-    pciTable->setColumnWidth(4, 100);
-    pciTable->horizontalHeader()->setStretchLastSection(true);
-    pciTable->setSelectionMode(QAbstractItemView::NoSelection);
+    pciTable->setStyleSheet(R"(
+        QTableWidget {
+            background-color: transparent;
+            font-family: Arial;
+            font-size: 16px;
+            color: #333333;
+            border: 1px solid rgba(74, 144, 226, 150);
+            border-radius: 8px;
+            gridline-color: rgba(74, 144, 226, 100);
+        }
+        QTableWidget::item {
+            padding: 12px;
+            background-color: rgba(255, 255, 255, 200);
+        }
+        QTableWidget::item:selected {
+            background-color: rgba(74, 144, 226, 160);
+            color: white;
+        }
+        QTableWidget::item:hover {
+            background-color: rgba(53, 122, 189, 120);
+        }
+        QHeaderView::section {
+            background-color: rgba(74, 144, 226, 200);
+            color: white;
+            font-weight: bold;
+            font-size: 20px;
+            padding: 10px;
+            border: none;
+        }
+        QHeaderView::section:hover {
+            background-color: rgba(53, 122, 189, 200);
+        }
+        QTableCornerButton::section {
+            background-color: rgba(74, 144, 226, 200);
+            border: none;
+        }
+        QTableWidget {
+            alternate-background-color: rgba(240, 248, 255, 120);
+        }
+    )");
+    pciTable->setAlternatingRowColors(true);
+    // Начальные ширины столбцов
+    pciTable->setColumnWidth(0, 50);  // №
+    pciTable->setColumnWidth(1, 100); // VendorID
+    pciTable->setColumnWidth(2, 100); // DeviceID
+    pciTable->setColumnWidth(3, 200); // Название
+
+    // Настройка режимов изменения размеров столбцов
+    pciTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);     // №
+    pciTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);     // VendorID
+    pciTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);     // DeviceID
+    pciTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive); // Название
+    pciTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);   // Шина
+
+    pciTable->horizontalHeader()->setStretchLastSection(false); // Отключаем автоматическое растяжение последнего столбца
+
+    pciTable->horizontalHeader()->setMinimumHeight(50);
+    pciTable->verticalHeader()->setVisible(false);
+    pciTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     pciTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    pciTable->setFocusPolicy(Qt::NoFocus);
+    pciTable->setMinimumHeight(550);
+    pciTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    pciTable->setWordWrap(true);
+    pciTable->setFixedSize(720, 500);
+
+    QShortcut *copyShortcut = new QShortcut(QKeySequence::Copy, pciTable);
+    connect(copyShortcut, &QShortcut::activated, this, [this]() {
+        QString copiedText;
+        QList<QTableWidgetItem*> selected = pciTable->selectedItems();
+        std::sort(selected.begin(), selected.end(), [](QTableWidgetItem* a, QTableWidgetItem* b){
+            return a->row() < b->row() || (a->row() == b->row() && a->column() < b->column());
+        });
+        int lastRow = -1;
+        for (QTableWidgetItem* item : selected) {
+            if (item->row() != lastRow && lastRow != -1) copiedText += "\n";
+            copiedText += item->data(Qt::UserRole).toString() + "\t";
+            lastRow = item->row();
+        }
+        QGuiApplication::clipboard()->setText(copiedText);
+    });
 
     QPushButton *backButton = new QPushButton("Назад", pciInfoPanel);
     backButton->setFixedSize(150, 50);
@@ -340,7 +431,7 @@ void MainWindow::setupPCIInfoPanel() {
 
     panelLayout->addWidget(titleLabel);
     panelLayout->addWidget(pciTable);
-    panelLayout->addStretch();
+    panelLayout->addStretch(1); // Increased stretch to push button down
     panelLayout->addWidget(backButton, 0, Qt::AlignCenter);
 
     connect(backButton, &QPushButton::clicked, this, &MainWindow::hidePCIInfo);
@@ -351,38 +442,21 @@ void MainWindow::setupPCIInfoPanel() {
 void MainWindow::showPCIInfo() {
     frameTimer->stop();
     resetTimer->stop();
-    lab1Activated = false;
-    powerInfoPanel->hide();
-    for (QPushButton *btn : labButtons) {
-        btn->hide();
-    }
-    pciInfoPanel->show();
-
-    QList<PCIDevice> devices = pciMonitor->getPCIDevices();
-    pciTable->setRowCount(devices.size());
-    for (int i = 0; i < devices.size(); ++i) {
-        pciTable->setItem(i, 0, new QTableWidgetItem(QString::number(i + 1)));
-        pciTable->setItem(i, 1, new QTableWidgetItem(devices[i].vendorID));
-        pciTable->setItem(i, 2, new QTableWidgetItem(devices[i].deviceID));
-        pciTable->setItem(i, 3, new QTableWidgetItem(devices[i].title));
-        pciTable->setItem(i, 4, new QTableWidgetItem(devices[i].busInfo));
-    }
-
-    drawBackground(true);
-    currentAnimationType = Sad;
-    startSadAnimation();
+    startBasketballAnimation(); // Запускаем анимацию баскетбола
 }
 
 void MainWindow::hidePCIInfo() {
     lab1Activated = false;
     frameTimer->stop();
     resetTimer->stop();
+    isPointerAnimationInfinite = false;
     pciInfoPanel->hide();
     for (QPushButton *btn : labButtons) {
         btn->show();
     }
     currentAnimationType = None;
     drawBackground();
+    lab1Activated = false;
 }
 
 void MainWindow::loadSadFrames() {
@@ -490,7 +564,31 @@ void MainWindow::loadBoredomFrames() {
                << assetsPath + "Boring_1.svg";
 }
 
-void MainWindow::drawBackground(bool center) {
+void MainWindow::loadBasketballFrames() {
+    QString assetsPath = getProjectAssetsPath();
+    framePaths.clear();
+    framePaths << assetsPath + "Basketball_1.svg"
+               << assetsPath + "Basketball_2.svg"
+               << assetsPath + "Basketball_3.svg"
+               << assetsPath + "Basketball_4.svg"
+               << assetsPath + "Basketball_5.svg"
+               << assetsPath + "Basketball_6.svg"
+               << assetsPath + "Basketball_7.svg"
+               << assetsPath + "Basketball_8.svg";
+}
+
+void MainWindow::loadPointerFrames() {
+    QString assetsPath = getProjectAssetsPath();
+    framePaths.clear();
+    framePaths << assetsPath + "Pointer_1.svg"
+               << assetsPath + "Pointer_2.svg"
+               << assetsPath + "Pointer_3.svg"
+               << assetsPath + "Pointer_4.svg"
+               << assetsPath + "Pointer_3.svg"
+               << assetsPath + "Pointer_2.svg";
+}
+
+void MainWindow::drawBackground() {
     QString assetsPath = getProjectAssetsPath();
     QPixmap pix(1245, 720);
     pix.fill(Qt::transparent);
@@ -508,7 +606,7 @@ void MainWindow::drawBackground(bool center) {
     if (QFile::exists(framePath)) {
         QSvgRenderer renderer(framePath);
         const QSize kroshSize(276, 386);
-        qreal xPos = (lab1Activated || pciInfoPanel->isVisible()) ? 250 : (pix.width() - kroshSize.width()) / 2.0;
+        qreal xPos = (pciInfoPanel->isVisible()) ? 100 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
         QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
         renderer.render(&painter, targetRect);
     } else {
@@ -520,14 +618,14 @@ void MainWindow::drawBackground(bool center) {
 
 void MainWindow::updateFrame() {
     if (currentFrame >= framePaths.size()) {
-        if (isEatAnimationInfinite && currentAnimationType == Eat) {
+        if ((isEatAnimationInfinite && currentAnimationType == Eat) || currentAnimationType == Pointer) {
             currentFrame = 0;
         } else {
             frameTimer->stop();
-            if (currentAnimationType == Boredom) {
-                // Не останавливаем, singleShot обработает окончание
+            if (currentAnimationType == Boredom || currentAnimationType == Basketball) {
+                drawBackground();
             } else {
-                resetTimer->start(3000);
+                drawBackground();
             }
             return;
         }
@@ -561,8 +659,11 @@ void MainWindow::updateFrame() {
         return;
     }
 
-    const QSize kroshSize(276, 386);
-    qreal xPos = (lab1Activated || pciInfoPanel->isVisible()) ? 250 : (pix.width() - kroshSize.width()) / 2.0;
+    QSize kroshSize(276, 386);
+    if (currentAnimationType == Basketball) {
+        kroshSize = QSize(400, 386);
+    }
+    qreal xPos = (pciInfoPanel->isVisible()) ? 100 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
     QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
     renderer.render(&painter, targetRect);
 
@@ -591,6 +692,14 @@ void MainWindow::startWelcomeAnimation() {
     currentAnimationType = Welcome;
     isEatAnimationInfinite = false;
     frameTimer->start(70);
+}
+
+void MainWindow::startPointerAnimation() {
+    loadPointerFrames();
+    currentFrame = 0;
+    currentAnimationType = Pointer;
+    isPointerAnimationInfinite = true;
+    frameTimer->start(400);
 }
 
 void MainWindow::startBoredomAnimation() {
@@ -623,6 +732,40 @@ void MainWindow::startBoredomAnimation() {
     });
 }
 
+void MainWindow::startBasketballAnimation() {
+    loadBasketballFrames();
+    currentFrame = 0;
+    currentAnimationType = Basketball;
+    isEatAnimationInfinite = false;
+    const int frameDelay = 130;
+    const int totalFrames = framePaths.size();
+    const int repetitions = 3;
+
+    frameTimer->start(frameDelay);
+    for (int i = 1; i < repetitions; ++i) {
+        QTimer::singleShot(i * totalFrames * frameDelay, this, [this, frameDelay]() {
+            if (currentAnimationType == Basketball) {
+                currentFrame = 0;
+                frameTimer->start(frameDelay);
+            }
+        });
+    }
+    QTimer::singleShot(repetitions * totalFrames * frameDelay, this, [this]() {
+        if (currentAnimationType == Basketball) {
+            currentAnimationType = None;
+            frameTimer->stop();
+            drawBackground();
+            QTimer::singleShot(100, this, [this]() {
+                startPointerAnimation(); // Запускаем Pointer-анимацию
+                activatePCIInfoPanel();  // Открываем панель PCI
+            });
+        } else {
+            frameTimer->stop();
+            drawBackground();
+        }
+    });
+}
+
 void MainWindow::startBlinkAnimation() {
     AnimationType prevType = currentAnimationType;
     loadBlinkFrames();
@@ -651,6 +794,16 @@ void MainWindow::restorePreviousAnimation(AnimationType prevType) {
     case Boredom:
         startBoredomAnimation();
         break;
+    case Basketball:
+        startBasketballAnimation();
+        break;
+    case Pointer:
+        if (isPointerAnimationInfinite) {
+            startPointerAnimation();
+        } else {
+            drawBackground();
+        }
+        break;
     case None:
     case Welcome:
     case Blink:
@@ -665,13 +818,63 @@ void MainWindow::activatePowerInfoPanel() {
         btn->hide();
     }
     powerInfoPanel->show();
-    drawBackground(true);
+    drawBackground();
     frameTimer->stop();
     resetTimer->stop();
     if (powerMonitor->getPowerSourceType() == "Сеть") {
         isEatAnimationInfinite = true;
         startEatAnimation();
     }
+}
+
+void MainWindow::activatePCIInfoPanel() {
+    lab1Activated = false;
+    powerInfoPanel->hide();
+    for (QPushButton *btn : labButtons) {
+        btn->hide();
+    }
+    pciInfoPanel->show();
+
+    startPointerAnimation();
+
+    QList<PCIDevice> devices = pciMonitor->getPCIDevices();
+    pciTable->setRowCount(devices.size());
+    QFont tableFont("Arial", 14);
+    QFontMetrics fontMetrics(tableFont);
+    const int maxNameWidth = 290; // Max pixel width for "Название"
+
+    for (int i = 0; i < devices.size(); ++i) {
+        QTableWidgetItem *numberItem = new QTableWidgetItem(QString::number(i + 1));
+        numberItem->setTextAlignment(Qt::AlignCenter);
+        pciTable->setItem(i, 0, numberItem);
+
+        QTableWidgetItem *vendorItem = new QTableWidgetItem(devices[i].vendorID);
+        vendorItem->setTextAlignment(Qt::AlignCenter);
+        pciTable->setItem(i, 1, vendorItem);
+
+        QTableWidgetItem *deviceItem = new QTableWidgetItem(devices[i].deviceID);
+        deviceItem->setTextAlignment(Qt::AlignCenter);
+        pciTable->setItem(i, 2, deviceItem);
+
+        QString nameText = devices[i].friendlyName;
+        QString truncatedName = fontMetrics.elidedText(nameText, Qt::ElideRight, maxNameWidth);
+        QTableWidgetItem *nameItem = new QTableWidgetItem(truncatedName);
+        nameItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        nameItem->setData(Qt::UserRole, nameText); // Store full text for copying
+        nameItem->setToolTip(nameText); // Show full text on hover
+        pciTable->setItem(i, 3, nameItem);
+
+        QString busText = devices[i].instanceID;
+        QTableWidgetItem *busItem = new QTableWidgetItem(busText);
+        busItem->setTextAlignment(Qt::AlignCenter);
+        busItem->setData(Qt::UserRole, busText); // Store full text for copying
+        busItem->setToolTip(busText); // Show full text on hover
+        pciTable->setItem(i, 4, busItem);
+    }
+    pciTable->resizeColumnsToContents();
+    pciTable->resizeRowsToContents();
+
+    drawBackground();
 }
 
 void MainWindow::showPowerInfo() {
@@ -708,12 +911,11 @@ void MainWindow::updatePowerMode(const QString &mode) {
 }
 
 void MainWindow::triggerBlinkAnimation() {
-    if (currentAnimationType != Eat && currentAnimationType != Sad && currentAnimationType != Boredom) {
+    if (currentAnimationType != Eat && currentAnimationType != Sad && currentAnimationType != Boredom && currentAnimationType != Basketball && currentAnimationType != Pointer) {
         frameTimer->stop();
         startBlinkAnimation();
     }
 }
 
 void MainWindow::checkBoredom() {
-    // No longer used, as boredom animation is triggered only by showPowerInfo
 }
