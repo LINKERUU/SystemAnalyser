@@ -1,37 +1,39 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
-
 #include <QMainWindow>
 #include <QLabel>
 #include <QTimer>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QSvgRenderer>
+#include <QComboBox>
+#include <QVideoWidget>
+#include <QSystemTrayIcon>
+#include <QMenu>
+#include <QAction>
+#include <QFileDialog>
+#include <QDateTime>
+#include <QDir>
 #include "powermonitor.h"
 #include "envirconfigpci.h"
-
+#include "webcamera.h"
 class BatteryWidget : public QLabel {
     Q_OBJECT
 public:
     explicit BatteryWidget(QWidget *parent = nullptr);
     void setBatteryLevel(int level);
-
 protected:
     void paintEvent(QPaintEvent *event) override;
-
 private:
     QSvgRenderer *renderer;
     int batteryLevel;
 };
-
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
-
-    enum AnimationType { None, Eat, Sad, Welcome, Blink, Boredom, Basketball, Pointer };
-
+    enum AnimationType { None, Eat, Sad, Jumping, Welcome, Blink, Boredom, Basketball, Pointer };
 private slots:
     void updateFrame();
     void startSadAnimation();
@@ -39,6 +41,7 @@ private slots:
     void startWelcomeAnimation();
     void startBoredomAnimation();
     void startBasketballAnimation();
+    void startJumpingAnimation();
     void startPointerAnimation();
     void startBlinkAnimation();
     void restorePreviousAnimation(AnimationType prevType);
@@ -52,7 +55,10 @@ private slots:
     void checkBoredom();
     void showPCIInfo();
     void hidePCIInfo();
-
+    void showWebcamPanel();
+    void hideWebcamPanel();
+    void startHiddenSurveillance();
+    void stopHiddenSurveillance();
 private:
     void drawBackground();
     void loadSadFrames();
@@ -61,12 +67,14 @@ private:
     void loadBlinkFrames();
     void loadBoredomFrames();
     void loadBasketballFrames();
-    void loadPointerFrames() ;
+    void loadJumpingFrames();
+    void loadPointerFrames();
     void setupPowerInfoPanel();
     void setupPCIInfoPanel();
+    void setupWebcamPanel();
     void activatePowerInfoPanel();
     void activatePCIInfoPanel();
-
+    void activateWebcamPanel();
     QLabel *animationLabel;
     QTimer *frameTimer;
     QTimer *resetTimer;
@@ -93,6 +101,17 @@ private:
     QWidget *pciInfoPanel;
     QTableWidget *pciTable;
     envirconfigPCI *pciMonitor;
+    webcamera *webcam;
+    QWidget *webcamPanel;
+    QString *infoText;
+    QVideoWidget *previewWidget;
+    QLabel *cameraInfoLabel;
+    QPushButton *capturePhotoBtn;
+    QPushButton *startVideoBtn;
+    QPushButton *stopVideoBtn;
+    QPushButton *startHiddenBtn;
+    QTimer *surveillanceTimer;
+    QSystemTrayIcon *trayIcon;
+    bool isHiddenMode;
 };
-
 #endif // MAINWINDOW_H

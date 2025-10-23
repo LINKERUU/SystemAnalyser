@@ -3,9 +3,9 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QPixmap>
-#include <qclipboard.h>
+#include <QClipboard>
 #include <QShortcut>
-#include <qguiapplication.h>
+#include <QGuiApplication>
 #include <QPainter>
 #include <QSvgRenderer>
 #include <QLabel>
@@ -36,27 +36,21 @@ void BatteryWidget::setBatteryLevel(int level) {
 void BatteryWidget::paintEvent(QPaintEvent *event) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-
     int imageIndex = (100 - batteryLevel) / 10 + 1;
     if (imageIndex < 1) imageIndex = 1;
     if (imageIndex > 10) imageIndex = 10;
-
     QString assetsPath = getProjectAssetsPath();
     QString svgPath = assetsPath + "battery_" + QString::number(imageIndex) + ".svg";
-
     if (!QFile::exists(svgPath)) {
         qDebug() << "Battery SVG file not found:" << svgPath;
         return;
     }
-
     if (!renderer->load(svgPath)) {
         qDebug() << "Failed to load battery SVG:" << svgPath;
         return;
     }
-
     QRect targetRect(0, 0, width(), height());
     renderer->render(&painter, targetRect);
-
     painter.setPen(Qt::black);
     painter.setFont(QFont("Arial", 20, QFont::Bold));
     QString levelText = QString::number(batteryLevel) + "%";
@@ -65,30 +59,36 @@ void BatteryWidget::paintEvent(QPaintEvent *event) {
 }
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), isEatAnimationInfinite(false),
-    lab1Activated(false), currentAnimationType(None) {
+    lab1Activated(false), currentAnimationType(None), isHiddenMode(false) {
     setFixedSize(1245, 720);
-
     QWidget *central = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-
     animationLabel = new QLabel(this);
     animationLabel->setFixedSize(1245, 720);
     animationLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(animationLabel);
     setCentralWidget(central);
+    QString carrotPath = getProjectAssetsPath() + "carrot.svg";
+    QSvgRenderer renderer(carrotPath);
+    QPixmap carrotPixmap(64, 64);
+    carrotPixmap.fill(Qt::transparent);
+
+    QPainter painter(&carrotPixmap);
+    renderer.render(&painter);
+    painter.end();
+
+    QCursor carrotCursor(carrotPixmap, 0, 0); // (0,0) — горячая точка
+    setCursor(carrotCursor);
 
     QStringList labNames = { "Лабораторная 1", "Лабораторная 2", "Лабораторная 3", "Лабораторная 4", "Лабораторная 5", "Лабораторная 6" };
     int startX = 40;
     int startY = 30;
     int spacing = 40;
-
     QPushButton *lab1Button = nullptr;
     QPushButton *lab2Button = nullptr;
-
-    QString assetsPath = getProjectAssetsPath();
-
+    QPushButton *lab4Button = nullptr;
     for (int i = 0; i < labNames.size(); ++i) {
         QPushButton *btn = new QPushButton(labNames[i], animationLabel);
         btn->setFixedSize(160, 40);
@@ -111,47 +111,42 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
         labButtons.append(btn);
         if (i == 0) lab1Button = btn;
         if (i == 1) lab2Button = btn;
+        if (i == 3) lab4Button = btn;
     }
-
     connect(lab1Button, &QPushButton::clicked, this, &MainWindow::showPowerInfo);
     connect(lab2Button, &QPushButton::clicked, this, &MainWindow::showPCIInfo);
-
+    connect(lab4Button, &QPushButton::clicked, this, &MainWindow::showWebcamPanel);
     drawBackground();
-
     frameTimer = new QTimer(this);
     connect(frameTimer, &QTimer::timeout, this, &MainWindow::updateFrame);
-
     resetTimer = new QTimer(this);
     resetTimer->setSingleShot(true);
     connect(resetTimer, &QTimer::timeout, this, [this]() { drawBackground(); });
-
     blinkTimer = new QTimer(this);
     connect(blinkTimer, &QTimer::timeout, this, &MainWindow::triggerBlinkAnimation);
     blinkTimer->start(5000);
-
     QTimer *welcomeTimer = new QTimer(this);
     welcomeTimer->setSingleShot(true);
     connect(welcomeTimer, &QTimer::timeout, this, &MainWindow::startWelcomeAnimation);
     welcomeTimer->start(2000);
-
     powerMonitor = new PowerMonitor(this);
     pciMonitor = new envirconfigPCI();
+    webcam = new webcamera(this);
     setupPowerInfoPanel();
     setupPCIInfoPanel();
-
-    connect(pciTable->horizontalHeader(), &QHeaderView::sectionResized, this, [=](int logicalIndex, int oldSize, int newSize){
-        if (logicalIndex == 3) { // Столбец "Название"
+    setupWebcamPanel();
+    connect(pciTable->horizontalHeader(), &QHeaderView::sectionResized, this, [=](int logicalIndex, int oldSize, int newSize) {
+        if (logicalIndex == 3) {
             QFontMetrics metrics(pciTable->font());
             for (int row = 0; row < pciTable->rowCount(); ++row) {
                 QTableWidgetItem* item = pciTable->item(row, 3);
                 if (!item) continue;
-                QString fullText = item->data(Qt::UserRole).toString(); // Полный текст
-                QString elided = metrics.elidedText(fullText, Qt::ElideRight, newSize - 10); // -10 для паддинга
+                QString fullText = item->data(Qt::UserRole).toString();
+                QString elided = metrics.elidedText(fullText, Qt::ElideRight, newSize - 10);
                 item->setText(elided);
             }
         }
     });
-
     connect(powerMonitor, &PowerMonitor::powerSourceChanged, this, [this](const QString &type) {
         updatePowerInfo(type, powerMonitor->getBatteryType(), powerMonitor->getBatteryLevel(),
                         powerMonitor->isPowerSavingEnabled(), powerMonitor->getDischargeDuration(),
@@ -168,88 +163,103 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
             }
         }
     });
-
     connect(powerMonitor, &PowerMonitor::batteryTypeChanged, this, [this](const QString &type) {
         updatePowerInfo(powerMonitor->getPowerSourceType(), type, powerMonitor->getBatteryLevel(),
                         powerMonitor->isPowerSavingEnabled(), powerMonitor->getDischargeDuration(),
                         powerMonitor->getRemainingBatteryTime());
     });
-
     connect(powerMonitor, &PowerMonitor::batteryLevelChanged, this, [this](int level) {
         updatePowerInfo(powerMonitor->getPowerSourceType(), powerMonitor->getBatteryType(), level,
                         powerMonitor->isPowerSavingEnabled(), powerMonitor->getDischargeDuration(),
                         powerMonitor->getRemainingBatteryTime());
     });
-
     connect(powerMonitor, &PowerMonitor::powerSavingEnabledChanged, this, [this](bool enabled) {
         updatePowerInfo(powerMonitor->getPowerSourceType(), powerMonitor->getBatteryType(),
                         powerMonitor->getBatteryLevel(), enabled, powerMonitor->getDischargeDuration(),
                         powerMonitor->getRemainingBatteryTime());
     });
-
     connect(powerMonitor, &PowerMonitor::dischargeDurationChanged, this, [this](const QTime &duration) {
         updatePowerInfo(powerMonitor->getPowerSourceType(), powerMonitor->getBatteryType(),
                         powerMonitor->getBatteryLevel(), powerMonitor->isPowerSavingEnabled(), duration,
                         powerMonitor->getRemainingBatteryTime());
     });
-
     connect(powerMonitor, &PowerMonitor::remainingBatteryTimeChanged, this, [this](const QTime &time) {
         updatePowerInfo(powerMonitor->getPowerSourceType(), powerMonitor->getBatteryType(),
                         powerMonitor->getBatteryLevel(), powerMonitor->isPowerSavingEnabled(),
                         powerMonitor->getDischargeDuration(), time);
     });
-
     connect(powerMonitor, &PowerMonitor::powerModeChanged, this, &MainWindow::updatePowerMode);
-
     powerMonitor->startMonitoring();
+    surveillanceTimer = new QTimer(this);
+    connect(surveillanceTimer, &QTimer::timeout, this, [this]() {
+        QString dirPath = QDir::currentPath() + "/surveillance/";
+        QDir().mkpath(dirPath);
+        QString filePath = dirPath + QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss") + ".jpg";
+        webcam->capturePhoto(filePath);
+    });
+    trayIcon = new QSystemTrayIcon(this);
+    trayIcon->setIcon(QIcon(getProjectAssetsPath() + "icon.png"));
+    QMenu *trayMenu = new QMenu(this);
+    QAction *showAction = trayMenu->addAction("Показать");
+    connect(showAction, &QAction::triggered, this, &MainWindow::stopHiddenSurveillance);
+    QAction *quitAction = trayMenu->addAction("Выход");
+    connect(quitAction, &QAction::triggered, qApp, &QCoreApplication::quit);
+    trayIcon->setContextMenu(trayMenu);
+    // Add hotkey to stop hidden surveillance
+    QShortcut *stopSurveillanceShortcut = new QShortcut(QKeySequence("Ctrl+Shift+S"), this);
+    connect(stopSurveillanceShortcut, &QShortcut::activated, this, &MainWindow::stopHiddenSurveillance);
 }
 
 MainWindow::~MainWindow() {}
+
+void MainWindow::updatePowerInfo(const QString &powerSourceType,
+                                 const QString &batteryType,
+                                 int batteryLevel,
+                                 bool powerSavingEnabled,
+                                 const QTime &dischargeDuration,
+                                 const QTime &remainingTime)
+{
+    powerSourceLabel->setText("Тип энергопитания: " + powerSourceType);
+    batteryTypeLabel->setText("Тип батареи: " + batteryType);
+    powerModeStatusLabel->setText("Режим работы: " + QString(powerSavingEnabled ? "Энергосбережение" : "Обычный"));
+    dischargeDurationLabel->setText("Время работы: " + dischargeDuration.toString("hh:mm:ss"));
+    remainingBatteryTimeLabel->setText("Оставшееся время: " + remainingTime.toString("hh:mm:ss"));
+    batteryWidget->setBatteryLevel(batteryLevel);
+}
 
 void MainWindow::setupPowerInfoPanel() {
     powerInfoPanel = new QWidget(animationLabel);
     powerInfoPanel->setFixedSize(500, 640);
     powerInfoPanel->move(700, 30);
     powerInfoPanel->setStyleSheet("background-color: rgba(255, 255, 255, 220); border-radius: 12px; border: 1px solid rgba(74, 144, 226, 100);");
-
     QVBoxLayout *panelLayout = new QVBoxLayout(powerInfoPanel);
     panelLayout->setContentsMargins(20, 20, 20, 20);
     panelLayout->setSpacing(20);
-
     QFont labelFont("Arial", 16);
-
     titleLabel = new QLabel("Энергопитание", powerInfoPanel);
     titleLabel->setFont(QFont("Arial", 20, QFont::Bold));
     titleLabel->setAlignment(Qt::AlignCenter);
     titleLabel->setStyleSheet("background-color: transparent; color: #2C5AA0; border:none;");
-
     batteryWidget = new BatteryWidget(powerInfoPanel);
-    batteryWidget->setStyleSheet("background-color: transparent; border:none;");
-
+    batteryWidget->setStyleSheet("background-color: transparent; color:black; border:none;");
     powerSourceLabel = new QLabel("Тип энергопитания: Неизвестно", powerInfoPanel);
     powerSourceLabel->setFont(labelFont);
-    powerSourceLabel->setStyleSheet("background-color: transparent; border:none;");
-
+    powerSourceLabel->setStyleSheet("background-color: transparent; color:black; border:none;");
     batteryTypeLabel = new QLabel("Тип батареи: Неизвестно", powerInfoPanel);
     batteryTypeLabel->setFont(labelFont);
-    batteryTypeLabel->setStyleSheet("background-color: transparent; border:none;");
-
+    batteryTypeLabel->setStyleSheet("background-color: transparent; color:black; border:none;");
     powerModeStatusLabel = new QLabel("Режим работы: Неизвестно", powerInfoPanel);
     powerModeStatusLabel->setFont(labelFont);
-    powerModeStatusLabel->setStyleSheet("background-color: transparent; border:none;");
-
+    powerModeStatusLabel->setStyleSheet("background-color: transparent; color:black; border:none;");
     dischargeDurationLabel = new QLabel("Время работы: 00:00:00", powerInfoPanel);
     dischargeDurationLabel->setFont(labelFont);
-    dischargeDurationLabel->setStyleSheet("background-color: transparent; border:none;");
-
+    dischargeDurationLabel->setStyleSheet("background-color: transparent; color:black; border:none;");
     remainingBatteryTimeLabel = new QLabel("Оставшееся время: 00:00:00", powerInfoPanel);
     remainingBatteryTimeLabel->setFont(labelFont);
-    remainingBatteryTimeLabel->setStyleSheet("background-color: transparent; border:none;");
-
+    remainingBatteryTimeLabel->setStyleSheet("background-color: transparent;color:black; border:none;");
     sleepButton = new QPushButton("Спящий режим", powerInfoPanel);
     hibernateButton = new QPushButton("Гибернация", powerInfoPanel);
     backButton = new QPushButton("Назад", powerInfoPanel);
-
     QString buttonStyle = R"(
         QPushButton {
             background-color: rgba(74, 144, 226, 220);
@@ -266,26 +276,21 @@ void MainWindow::setupPowerInfoPanel() {
             background-color: rgba(44, 90, 160, 240);
         }
     )";
-
     sleepButton->setStyleSheet(buttonStyle);
     hibernateButton->setStyleSheet(buttonStyle);
     backButton->setStyleSheet(buttonStyle);
-
     sleepButton->setFixedSize(150, 50);
     hibernateButton->setFixedSize(150, 50);
     backButton->setFixedSize(150, 50);
-
     QHBoxLayout *buttonLayout = new QHBoxLayout();
     buttonLayout->setSpacing(10);
     buttonLayout->addWidget(sleepButton);
     buttonLayout->addWidget(hibernateButton);
     buttonLayout->addWidget(backButton);
-
     QHBoxLayout *batteryLayout = new QHBoxLayout();
     batteryLayout->addStretch();
     batteryLayout->addWidget(batteryWidget, 0, Qt::AlignCenter);
     batteryLayout->addStretch();
-
     panelLayout->addWidget(titleLabel);
     panelLayout->addLayout(batteryLayout);
     panelLayout->addWidget(powerSourceLabel);
@@ -295,11 +300,9 @@ void MainWindow::setupPowerInfoPanel() {
     panelLayout->addWidget(remainingBatteryTimeLabel);
     panelLayout->addStretch();
     panelLayout->addLayout(buttonLayout);
-
     connect(sleepButton, &QPushButton::clicked, powerMonitor, &PowerMonitor::triggerSleep);
     connect(hibernateButton, &QPushButton::clicked, powerMonitor, &PowerMonitor::triggerHibernate);
     connect(backButton, &QPushButton::clicked, this, &MainWindow::hidePowerInfo);
-
     powerInfoPanel->hide();
 }
 
@@ -314,16 +317,13 @@ void MainWindow::setupPCIInfoPanel() {
             border: 1px solid rgba(74, 144, 226, 120);
         }
     )");
-
     QVBoxLayout *panelLayout = new QVBoxLayout(pciInfoPanel);
     panelLayout->setContentsMargins(25, 25, 25, 25);
     panelLayout->setSpacing(25);
-
     QLabel *titleLabel = new QLabel("Устройства PCI", pciInfoPanel);
     titleLabel->setFont(QFont("Arial", 22, QFont::Bold));
     titleLabel->setAlignment(Qt::AlignCenter);
     titleLabel->setStyleSheet("background-color: transparent; border:none; color: #2C5AA0;");
-
     pciTable = new QTableWidget(pciInfoPanel);
     pciTable->setRowCount(0);
     pciTable->setColumnCount(5);
@@ -369,21 +369,16 @@ void MainWindow::setupPCIInfoPanel() {
         }
     )");
     pciTable->setAlternatingRowColors(true);
-    // Начальные ширины столбцов
-    pciTable->setColumnWidth(0, 50);  // №
-    pciTable->setColumnWidth(1, 100); // VendorID
-    pciTable->setColumnWidth(2, 100); // DeviceID
-    pciTable->setColumnWidth(3, 200); // Название
-
-    // Настройка режимов изменения размеров столбцов
-    pciTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);     // №
-    pciTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);     // VendorID
-    pciTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);     // DeviceID
-    pciTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive); // Название
-    pciTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);   // Шина
-
-    pciTable->horizontalHeader()->setStretchLastSection(false); // Отключаем автоматическое растяжение последнего столбца
-
+    pciTable->setColumnWidth(0, 50);
+    pciTable->setColumnWidth(1, 100);
+    pciTable->setColumnWidth(2, 100);
+    pciTable->setColumnWidth(3, 200);
+    pciTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+    pciTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    pciTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
+    pciTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
+    pciTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    pciTable->horizontalHeader()->setStretchLastSection(false);
     pciTable->horizontalHeader()->setMinimumHeight(50);
     pciTable->verticalHeader()->setVisible(false);
     pciTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -393,7 +388,6 @@ void MainWindow::setupPCIInfoPanel() {
     pciTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     pciTable->setWordWrap(true);
     pciTable->setFixedSize(720, 500);
-
     QShortcut *copyShortcut = new QShortcut(QKeySequence::Copy, pciTable);
     connect(copyShortcut, &QShortcut::activated, this, [this]() {
         QString copiedText;
@@ -409,7 +403,6 @@ void MainWindow::setupPCIInfoPanel() {
         }
         QGuiApplication::clipboard()->setText(copiedText);
     });
-
     QPushButton *backButton = new QPushButton("Назад", pciInfoPanel);
     backButton->setFixedSize(150, 50);
     backButton->setStyleSheet(R"(
@@ -428,21 +421,134 @@ void MainWindow::setupPCIInfoPanel() {
             background-color: rgba(44, 90, 160, 240);
         }
     )");
-
     panelLayout->addWidget(titleLabel);
     panelLayout->addWidget(pciTable);
-    panelLayout->addStretch(1); // Increased stretch to push button down
+    panelLayout->addStretch(1);
     panelLayout->addWidget(backButton, 0, Qt::AlignCenter);
-
     connect(backButton, &QPushButton::clicked, this, &MainWindow::hidePCIInfo);
-
     pciInfoPanel->hide();
+}
+
+void MainWindow::setupWebcamPanel() {
+    QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
+    QString infoText;
+    if (cameras.isEmpty()) {
+        infoText = "Камера не найдена";
+    } else {
+        QCameraDevice defaultCamera = cameras.first();
+        infoText = defaultCamera.description();
+    }
+    webcamPanel = new QWidget(animationLabel);
+    webcamPanel->setFixedSize(800, 600);
+    webcamPanel->move(400, 60);
+    webcamPanel->setStyleSheet(R"(
+        QWidget {
+            background-color: rgba(255, 255, 255, 240);
+            border-radius: 15px;
+            border: 2px solid rgba(74, 144, 226, 150);
+            padding: 15px;
+        }
+    )");
+    QVBoxLayout *panelLayout = new QVBoxLayout(webcamPanel);
+    panelLayout->setContentsMargins(20, 20, 20, 20);
+    panelLayout->setSpacing(15);
+    QLabel *titleLabel = new QLabel("Веб-камера", webcamPanel);
+    titleLabel->setFont(QFont("Arial", 24, QFont::Bold));
+    titleLabel->setAlignment(Qt::AlignCenter);
+    titleLabel->setStyleSheet(R"(
+        background-color: transparent;
+        color: #2C5AA0;
+        border: none;
+        padding: 10px;
+    )");
+    cameraInfoLabel = new QLabel("Информация о камере: "+infoText);
+    cameraInfoLabel->setAlignment(Qt::AlignCenter); // центрируем текст
+    cameraInfoLabel->setWordWrap(false); // запрет переносов
+    cameraInfoLabel->setTextFormat(Qt::PlainText); // обычный текст
+    cameraInfoLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    cameraInfoLabel->setFont(QFont("Arial", 14));
+    cameraInfoLabel->setStyleSheet("background-color: transparent; border: none; color: #333333;");
+    previewWidget = new QVideoWidget(webcamPanel);
+    previewWidget->setFixedSize(560, 345);
+    previewWidget->setStyleSheet("background-color: black; border-radius: 10px;");
+    previewWidget->setAspectRatioMode(Qt::KeepAspectRatioByExpanding);
+    capturePhotoBtn = new QPushButton("Сделать фото", webcamPanel);
+    startVideoBtn = new QPushButton("Начать видео", webcamPanel);
+    stopVideoBtn = new QPushButton("Остановить", webcamPanel);
+    stopVideoBtn->setEnabled(false);
+    startHiddenBtn = new QPushButton("Шпионить", webcamPanel);
+    backButton = new QPushButton("Назад", webcamPanel);
+    QString buttonStyle = R"(
+        QPushButton {
+            background-color: rgba(74, 144, 226, 220);
+            color: white;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            padding: 10px;
+            min-width: 120px;
+        }
+        QPushButton:hover {
+            background-color: rgba(53, 122, 189, 220);
+        }
+        QPushButton:pressed {
+            background-color: rgba(44, 90, 160, 240);
+        }
+        QPushButton:disabled {
+            background-color: rgba(74, 144, 226, 100);
+        }
+    )";
+    capturePhotoBtn->setStyleSheet(buttonStyle);
+    startVideoBtn->setStyleSheet(buttonStyle);
+    stopVideoBtn->setStyleSheet(buttonStyle);
+    startHiddenBtn->setStyleSheet(buttonStyle);
+    backButton->setStyleSheet(buttonStyle);
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    buttonLayout->setSpacing(20);
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(capturePhotoBtn);
+    buttonLayout->addWidget(startVideoBtn);
+    buttonLayout->addWidget(stopVideoBtn);
+    buttonLayout->addWidget(startHiddenBtn);
+    buttonLayout->addWidget(backButton);
+    buttonLayout->addStretch();
+    connect(capturePhotoBtn, &QPushButton::clicked, this, [this]() {
+        QString dirPath = QDir::currentPath() + "/photos/";
+        QDir().mkpath(dirPath);
+        QString filePath = dirPath + "photo_" + QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss") + ".jpg";
+        webcam->capturePhoto(filePath);
+    });
+    connect(startVideoBtn, &QPushButton::clicked, this, [this]() {
+        QString dirPath = QDir::currentPath() + "/videos/";
+        QDir().mkpath(dirPath);
+        QString filePath = dirPath + "video_" + QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss") + ".mp4";
+        webcam->startVideoRecord(filePath);
+        startVideoBtn->setEnabled(false);
+        stopVideoBtn->setEnabled(true);
+    });
+    connect(stopVideoBtn, &QPushButton::clicked, this, [this]() {
+        webcam->stopVideoRecord();
+        startVideoBtn->setEnabled(true);
+        stopVideoBtn->setEnabled(false);
+    });
+    connect(startHiddenBtn, &QPushButton::clicked, this, &MainWindow::startHiddenSurveillance);
+    connect(backButton, &QPushButton::clicked, this, &MainWindow::hideWebcamPanel);
+    panelLayout->addWidget(titleLabel);
+    panelLayout->addWidget(cameraInfoLabel);
+    QHBoxLayout *videoLayout = new QHBoxLayout();
+    videoLayout->addStretch();
+    videoLayout->addWidget(previewWidget, 0, Qt::AlignCenter);
+    videoLayout->addStretch();
+    panelLayout->addLayout(videoLayout);
+    panelLayout->addStretch();
+    panelLayout->addLayout(buttonLayout);
+    webcamPanel->hide();
 }
 
 void MainWindow::showPCIInfo() {
     frameTimer->stop();
     resetTimer->stop();
-    startBasketballAnimation(); // Запускаем анимацию баскетбола
+    startBasketballAnimation();
 }
 
 void MainWindow::hidePCIInfo() {
@@ -456,7 +562,6 @@ void MainWindow::hidePCIInfo() {
     }
     currentAnimationType = None;
     drawBackground();
-    lab1Activated = false;
 }
 
 void MainWindow::loadSadFrames() {
@@ -564,6 +669,21 @@ void MainWindow::loadBoredomFrames() {
                << assetsPath + "Boring_1.svg";
 }
 
+void MainWindow::loadJumpingFrames() {
+    QString assetsPath = getProjectAssetsPath();
+    framePaths.clear();
+    framePaths << assetsPath + "Jumping_1.svg"
+               << assetsPath + "Jumping_2.svg"
+               << assetsPath + "Jumping_3.svg"
+               << assetsPath + "Jumping_4.svg"
+               << assetsPath + "Jumping_5.svg"
+               << assetsPath + "Jumping_1.svg"
+               << assetsPath + "Jumping_2.svg"
+               << assetsPath + "Jumping_3.svg"
+               << assetsPath + "Jumping_4.svg"
+               << assetsPath + "Jumping_5.svg";
+}
+
 void MainWindow::loadBasketballFrames() {
     QString assetsPath = getProjectAssetsPath();
     framePaths.clear();
@@ -601,18 +721,22 @@ void MainWindow::drawBackground() {
         qDebug() << "Background image not found:" << bgPath;
         pix.fill(Qt::lightGray);
     }
-
     QString framePath = assetsPath + "Frame1.svg";
     if (QFile::exists(framePath)) {
         QSvgRenderer renderer(framePath);
-        const QSize kroshSize(276, 386);
-        qreal xPos = (pciInfoPanel->isVisible()) ? 100 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
-        QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
-        renderer.render(&painter, targetRect);
+        if (renderer.isValid()) {
+            const QSize kroshSize(276, 386);
+            bool panelVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
+            bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
+            qreal xPos = (panelVisible || webcamVisible) ? 50 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
+            QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
+            renderer.render(&painter, targetRect);
+        } else {
+            qDebug() << "Invalid SVG content in:" << framePath;
+        }
     } else {
         qDebug() << "Frame1.svg not found:" << framePath;
     }
-
     animationLabel->setPixmap(pix);
 }
 
@@ -630,7 +754,6 @@ void MainWindow::updateFrame() {
             return;
         }
     }
-
     QString assetsPath = getProjectAssetsPath();
     QPixmap pix(1245, 720);
     pix.fill(Qt::transparent);
@@ -643,7 +766,6 @@ void MainWindow::updateFrame() {
         qDebug() << "Background image not found:" << bgPath;
         pix.fill(Qt::lightGray);
     }
-
     QString currentPath = framePaths[currentFrame];
     if (!QFile::exists(currentPath)) {
         qDebug() << "Animation file not found:" << currentPath << "- Stopping animation";
@@ -651,22 +773,24 @@ void MainWindow::updateFrame() {
         drawBackground();
         return;
     }
-
     QSvgRenderer renderer(currentPath);
     if (!renderer.isValid()) {
         qDebug() << "Failed to load SVG for animation:" << currentPath << "- Stopping animation";
         frameTimer->stop();
         return;
     }
-
     QSize kroshSize(276, 386);
     if (currentAnimationType == Basketball) {
         kroshSize = QSize(400, 386);
     }
-    qreal xPos = (pciInfoPanel->isVisible()) ? 100 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
+    if (currentAnimationType == Jumping) {
+        kroshSize = QSize(400, 386);
+    }
+    bool panelVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
+    bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
+    qreal xPos = (panelVisible || webcamVisible) ? 50 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
     QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
     renderer.render(&painter, targetRect);
-
     animationLabel->setPixmap(pix);
     currentFrame++;
 }
@@ -683,6 +807,13 @@ void MainWindow::startEatAnimation() {
     loadEatFrames();
     currentFrame = 0;
     currentAnimationType = Eat;
+    frameTimer->start(80);
+}
+
+void MainWindow::startJumpingAnimation() {
+    loadJumpingFrames();
+    currentFrame = 0;
+    currentAnimationType = Jumping;
     frameTimer->start(80);
 }
 
@@ -710,7 +841,6 @@ void MainWindow::startBoredomAnimation() {
     const int frameDelay = 130;
     const int totalFrames = framePaths.size();
     const int repetitions = 3;
-
     frameTimer->start(frameDelay);
     for (int i = 1; i < repetitions; ++i) {
         QTimer::singleShot(i * totalFrames * frameDelay, this, [this, frameDelay]() {
@@ -740,7 +870,6 @@ void MainWindow::startBasketballAnimation() {
     const int frameDelay = 130;
     const int totalFrames = framePaths.size();
     const int repetitions = 3;
-
     frameTimer->start(frameDelay);
     for (int i = 1; i < repetitions; ++i) {
         QTimer::singleShot(i * totalFrames * frameDelay, this, [this, frameDelay]() {
@@ -756,8 +885,8 @@ void MainWindow::startBasketballAnimation() {
             frameTimer->stop();
             drawBackground();
             QTimer::singleShot(100, this, [this]() {
-                startPointerAnimation(); // Запускаем Pointer-анимацию
-                activatePCIInfoPanel();  // Открываем панель PCI
+                startPointerAnimation();
+                activatePCIInfoPanel();
             });
         } else {
             frameTimer->stop();
@@ -772,7 +901,6 @@ void MainWindow::startBlinkAnimation() {
     currentFrame = 0;
     currentAnimationType = Blink;
     frameTimer->start(100);
-
     disconnect(resetTimer, &QTimer::timeout, this, nullptr);
     connect(resetTimer, &QTimer::timeout, this, [this, prevType]() {
         restorePreviousAnimation(prevType);
@@ -783,13 +911,15 @@ void MainWindow::restorePreviousAnimation(AnimationType prevType) {
     currentAnimationType = prevType;
     frameTimer->stop();
     resetTimer->stop();
-
     switch (prevType) {
     case Eat:
         startEatAnimation();
         break;
     case Sad:
         startSadAnimation();
+        break;
+    case Jumping:
+        startJumpingAnimation();
         break;
     case Boredom:
         startBoredomAnimation();
@@ -834,46 +964,38 @@ void MainWindow::activatePCIInfoPanel() {
         btn->hide();
     }
     pciInfoPanel->show();
-
     startPointerAnimation();
-
     QList<PCIDevice> devices = pciMonitor->getPCIDevices();
     pciTable->setRowCount(devices.size());
     QFont tableFont("Arial", 14);
     QFontMetrics fontMetrics(tableFont);
-    const int maxNameWidth = 290; // Max pixel width for "Название"
-
+    const int maxNameWidth = 290;
     for (int i = 0; i < devices.size(); ++i) {
         QTableWidgetItem *numberItem = new QTableWidgetItem(QString::number(i + 1));
         numberItem->setTextAlignment(Qt::AlignCenter);
         pciTable->setItem(i, 0, numberItem);
-
         QTableWidgetItem *vendorItem = new QTableWidgetItem(devices[i].vendorID);
         vendorItem->setTextAlignment(Qt::AlignCenter);
         pciTable->setItem(i, 1, vendorItem);
-
         QTableWidgetItem *deviceItem = new QTableWidgetItem(devices[i].deviceID);
         deviceItem->setTextAlignment(Qt::AlignCenter);
         pciTable->setItem(i, 2, deviceItem);
-
         QString nameText = devices[i].friendlyName;
         QString truncatedName = fontMetrics.elidedText(nameText, Qt::ElideRight, maxNameWidth);
         QTableWidgetItem *nameItem = new QTableWidgetItem(truncatedName);
         nameItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        nameItem->setData(Qt::UserRole, nameText); // Store full text for copying
-        nameItem->setToolTip(nameText); // Show full text on hover
+        nameItem->setData(Qt::UserRole, nameText);
+        nameItem->setToolTip(nameText);
         pciTable->setItem(i, 3, nameItem);
-
         QString busText = devices[i].instanceID;
         QTableWidgetItem *busItem = new QTableWidgetItem(busText);
         busItem->setTextAlignment(Qt::AlignCenter);
-        busItem->setData(Qt::UserRole, busText); // Store full text for copying
-        busItem->setToolTip(busText); // Show full text on hover
+        busItem->setData(Qt::UserRole, busText);
+        busItem->setToolTip(busText);
         pciTable->setItem(i, 4, busItem);
     }
     pciTable->resizeColumnsToContents();
     pciTable->resizeRowsToContents();
-
     drawBackground();
 }
 
@@ -896,26 +1018,80 @@ void MainWindow::hidePowerInfo() {
     drawBackground();
 }
 
-void MainWindow::updatePowerInfo(const QString &powerSource, const QString &batteryType, int level,
-                                 bool powerSavingEnabled, const QTime &dischargeDuration,
-                                 const QTime &remainingTime) {
-    powerSourceLabel->setText("Тип энергопитания: " + powerSource);
-    batteryTypeLabel->setText("Тип батареи: " + batteryType);
-    batteryWidget->setBatteryLevel(level);
-    dischargeDurationLabel->setText("Время работы: " + dischargeDuration.toString("hh:mm:ss"));
-    remainingBatteryTimeLabel->setText("Оставшееся время: " + remainingTime.toString("hh:mm:ss"));
-}
-
 void MainWindow::updatePowerMode(const QString &mode) {
     powerModeStatusLabel->setText(QString("Режим работы: %1").arg(mode));
 }
 
 void MainWindow::triggerBlinkAnimation() {
-    if (currentAnimationType != Eat && currentAnimationType != Sad && currentAnimationType != Boredom && currentAnimationType != Basketball && currentAnimationType != Pointer) {
+    if (currentAnimationType != Eat && currentAnimationType != Sad && currentAnimationType != Boredom && currentAnimationType != Basketball && currentAnimationType != Pointer && currentAnimationType != Jumping) {
         frameTimer->stop();
         startBlinkAnimation();
     }
 }
 
-void MainWindow::checkBoredom() {
+void MainWindow::checkBoredom() {}
+
+void MainWindow::showWebcamPanel() {
+    frameTimer->stop();
+    resetTimer->stop();
+    currentAnimationType = Jumping;
+    isEatAnimationInfinite = false;
+    startJumpingAnimation();
+    QTimer::singleShot(950, this, &MainWindow::activateWebcamPanel);
+}
+
+void MainWindow::activateWebcamPanel() {
+    for (QPushButton *btn : labButtons) {
+        btn->hide();
+    }
+    webcamPanel->show();
+    drawBackground();
+    auto devices = webcam->getCameraDevices();
+    if (!devices.isEmpty()) {
+        QCameraDevice defaultDevice = devices.first();
+        webcam->setCamera(defaultDevice);
+        webcam->setVideoOutput(previewWidget);
+        QString pos = defaultDevice.position() == QCameraDevice::FrontFace ? "Передняя" :
+                          defaultDevice.position() == QCameraDevice::BackFace ? "Задняя" : "Неизвестно";
+        QString info = QString("Информация о камере: %1")
+                           .arg(defaultDevice.description());
+        cameraInfoLabel->setText(info);
+    }
+}
+
+void MainWindow::hideWebcamPanel() {
+    // Остановить запись и поток с камеры
+    webcam->stopVideoRecord(); // если видео идёт
+    webcam->stopCamera(); // если есть такой метод (добавь в класс webcamera)
+    // Остановить таймер скрытого режима, если он активен
+    if (surveillanceTimer->isActive()) {
+        surveillanceTimer->stop();
+    }
+    // Скрываем панель и возвращаемся на главный экран
+    webcamPanel->hide();
+    for (QPushButton *btn : labButtons) {
+        btn->show();
+    }
+    currentAnimationType = None;
+    drawBackground();
+}
+
+void MainWindow::startHiddenSurveillance() {
+    isHiddenMode = true;
+    webcam->setVideoOutput(nullptr);
+    hide();
+    trayIcon->hide();
+    QString dirPath = QDir::currentPath() + "/surveillance/";
+    QDir().mkpath(dirPath);
+    surveillanceTimer->start(3000);
+    qDebug() << "Hidden surveillance started. Snapshots are saved to:" << dirPath;
+}
+
+void MainWindow::stopHiddenSurveillance() {
+    isHiddenMode = false;
+    surveillanceTimer->stop();
+    webcam->setVideoOutput(previewWidget);
+    show();
+    trayIcon->show();
+    qDebug() << "Hidden surveillance stopped.";
 }
