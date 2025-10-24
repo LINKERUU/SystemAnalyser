@@ -16,31 +16,27 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QFontMetrics>
-
 QString getProjectAssetsPath() {
     QString sourceFilePath = __FILE__;
     QDir sourceDir(sourceFilePath);
     return sourceDir.absoluteFilePath("../assets/") + "/";
 }
-
+static const QString ASSETS_PATH = getProjectAssetsPath();
 BatteryWidget::BatteryWidget(QWidget *parent) : QLabel(parent), batteryLevel(0) {
     setFixedSize(350, 150);
     renderer = new QSvgRenderer(this);
 }
-
 void BatteryWidget::setBatteryLevel(int level) {
     batteryLevel = qBound(0, level, 100);
     update();
 }
-
 void BatteryWidget::paintEvent(QPaintEvent *event) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     int imageIndex = (100 - batteryLevel) / 10 + 1;
     if (imageIndex < 1) imageIndex = 1;
     if (imageIndex > 10) imageIndex = 10;
-    QString assetsPath = getProjectAssetsPath();
-    QString svgPath = assetsPath + "battery_" + QString::number(imageIndex) + ".svg";
+    QString svgPath = ASSETS_PATH + "battery" + QString::number(imageIndex) + ".svg";
     if (!QFile::exists(svgPath)) {
         qDebug() << "Battery SVG file not found:" << svgPath;
         return;
@@ -57,31 +53,28 @@ void BatteryWidget::paintEvent(QPaintEvent *event) {
     QRect textRect = rect().adjusted(10, 10, -10, -10);
     painter.drawText(textRect, Qt::AlignCenter, levelText);
 }
-
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), isEatAnimationInfinite(false),
-    lab1Activated(false), currentAnimationType(None), isHiddenMode(false) {
+    lab1Activated(false), currentAnimationType(None), isHiddenMode(false), isCameraOn(false), wasCameraOn(false) {
     setFixedSize(1245, 720);
     QWidget *central = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
+    isCameraOn = false;
     animationLabel = new QLabel(this);
     animationLabel->setFixedSize(1245, 720);
     animationLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(animationLabel);
     setCentralWidget(central);
-    QString carrotPath = getProjectAssetsPath() + "carrot.svg";
+    QString carrotPath = ASSETS_PATH + "carrot.svg";
     QSvgRenderer renderer(carrotPath);
     QPixmap carrotPixmap(64, 64);
     carrotPixmap.fill(Qt::transparent);
-
     QPainter painter(&carrotPixmap);
     renderer.render(&painter);
     painter.end();
-
     QCursor carrotCursor(carrotPixmap, 0, 0); // (0,0) — горячая точка
     setCursor(carrotCursor);
-
     QStringList labNames = { "Лабораторная 1", "Лабораторная 2", "Лабораторная 3", "Лабораторная 4", "Лабораторная 5", "Лабораторная 6" };
     int startX = 40;
     int startY = 30;
@@ -135,7 +128,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     setupPowerInfoPanel();
     setupPCIInfoPanel();
     setupWebcamPanel();
-    connect(pciTable->horizontalHeader(), &QHeaderView::sectionResized, this, [=](int logicalIndex, int oldSize, int newSize) {
+    connect(pciTable->horizontalHeader(), &QHeaderView::sectionResized, this, [=](int logicalIndex, int newSize) {
         if (logicalIndex == 3) {
             QFontMetrics metrics(pciTable->font());
             for (int row = 0; row < pciTable->rowCount(); ++row) {
@@ -198,7 +191,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
         webcam->capturePhoto(filePath);
     });
     trayIcon = new QSystemTrayIcon(this);
-    trayIcon->setIcon(QIcon(getProjectAssetsPath() + "icon.png"));
+    trayIcon->setIcon(QIcon(ASSETS_PATH + "icon.png"));
     QMenu *trayMenu = new QMenu(this);
     QAction *showAction = trayMenu->addAction("Показать");
     connect(showAction, &QAction::triggered, this, &MainWindow::stopHiddenSurveillance);
@@ -209,9 +202,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     QShortcut *stopSurveillanceShortcut = new QShortcut(QKeySequence("Ctrl+Shift+S"), this);
     connect(stopSurveillanceShortcut, &QShortcut::activated, this, &MainWindow::stopHiddenSurveillance);
 }
-
 MainWindow::~MainWindow() {}
-
+void MainWindow::startAnimation(const QString &prefix, int start, int end, int delay,
+                                bool infinite = false, bool reverse = false, AnimationType type = None,int count=1) {
+    loadFrames(prefix, start, end, count, reverse,false);
+    currentFrame = 0;
+    currentAnimationType = type;
+    isEatAnimationInfinite = infinite;
+    frameTimer->start(delay);
+}
 void MainWindow::updatePowerInfo(const QString &powerSourceType,
                                  const QString &batteryType,
                                  int batteryLevel,
@@ -226,7 +225,6 @@ void MainWindow::updatePowerInfo(const QString &powerSourceType,
     remainingBatteryTimeLabel->setText("Оставшееся время: " + remainingTime.toString("hh:mm:ss"));
     batteryWidget->setBatteryLevel(batteryLevel);
 }
-
 void MainWindow::setupPowerInfoPanel() {
     powerInfoPanel = new QWidget(animationLabel);
     powerInfoPanel->setFixedSize(500, 640);
@@ -305,7 +303,6 @@ void MainWindow::setupPowerInfoPanel() {
     connect(backButton, &QPushButton::clicked, this, &MainWindow::hidePowerInfo);
     powerInfoPanel->hide();
 }
-
 void MainWindow::setupPCIInfoPanel() {
     pciInfoPanel = new QWidget(animationLabel);
     pciInfoPanel->setFixedSize(770, 680);
@@ -446,12 +443,11 @@ void MainWindow::setupWebcamPanel() {
             background-color: rgba(255, 255, 255, 240);
             border-radius: 15px;
             border: 2px solid rgba(74, 144, 226, 150);
-            padding: 15px;
+            padding: 5px;
         }
     )");
     QVBoxLayout *panelLayout = new QVBoxLayout(webcamPanel);
     panelLayout->setContentsMargins(20, 20, 20, 20);
-    panelLayout->setSpacing(15);
     QLabel *titleLabel = new QLabel("Веб-камера", webcamPanel);
     titleLabel->setFont(QFont("Arial", 24, QFont::Bold));
     titleLabel->setAlignment(Qt::AlignCenter);
@@ -459,7 +455,7 @@ void MainWindow::setupWebcamPanel() {
         background-color: transparent;
         color: #2C5AA0;
         border: none;
-        padding: 10px;
+        padding: 5px;
     )");
     cameraInfoLabel = new QLabel("Информация о камере: "+infoText);
     cameraInfoLabel->setAlignment(Qt::AlignCenter); // центрируем текст
@@ -470,13 +466,19 @@ void MainWindow::setupWebcamPanel() {
     cameraInfoLabel->setStyleSheet("background-color: transparent; border: none; color: #333333;");
     previewWidget = new QVideoWidget(webcamPanel);
     previewWidget->setFixedSize(560, 345);
-    previewWidget->setStyleSheet("background-color: black; border-radius: 10px;");
     previewWidget->setAspectRatioMode(Qt::KeepAspectRatioByExpanding);
+
+    previewBlackOverlay = new QWidget(webcamPanel);
+    previewBlackOverlay->setFixedSize(560, 345);
+    previewBlackOverlay->setStyleSheet("background-color: black; border-radius:0;");
+    previewBlackOverlay->hide();
+
     capturePhotoBtn = new QPushButton("Сделать фото", webcamPanel);
     startVideoBtn = new QPushButton("Начать видео", webcamPanel);
     stopVideoBtn = new QPushButton("Остановить", webcamPanel);
     stopVideoBtn->setEnabled(false);
     startHiddenBtn = new QPushButton("Шпионить", webcamPanel);
+    toggleCameraBtn = new QPushButton("Включить камеру", webcamPanel);
     backButton = new QPushButton("Назад", webcamPanel);
     QString buttonStyle = R"(
         QPushButton {
@@ -502,7 +504,10 @@ void MainWindow::setupWebcamPanel() {
     startVideoBtn->setStyleSheet(buttonStyle);
     stopVideoBtn->setStyleSheet(buttonStyle);
     startHiddenBtn->setStyleSheet(buttonStyle);
+    toggleCameraBtn->setStyleSheet(buttonStyle);
     backButton->setStyleSheet(buttonStyle);
+    capturePhotoBtn->setEnabled(false);
+    startVideoBtn->setEnabled(false);
     QHBoxLayout *buttonLayout = new QHBoxLayout();
     buttonLayout->setSpacing(20);
     buttonLayout->addStretch();
@@ -512,6 +517,11 @@ void MainWindow::setupWebcamPanel() {
     buttonLayout->addWidget(startHiddenBtn);
     buttonLayout->addWidget(backButton);
     buttonLayout->addStretch();
+    QHBoxLayout *toggleLayout = new QHBoxLayout();
+    toggleLayout->setSpacing(20);
+    toggleLayout->addStretch();
+    toggleLayout->addWidget(toggleCameraBtn);
+    toggleLayout->addStretch();
     connect(capturePhotoBtn, &QPushButton::clicked, this, [this]() {
         QString dirPath = QDir::currentPath() + "/photos/";
         QDir().mkpath(dirPath);
@@ -532,25 +542,41 @@ void MainWindow::setupWebcamPanel() {
         stopVideoBtn->setEnabled(false);
     });
     connect(startHiddenBtn, &QPushButton::clicked, this, &MainWindow::startHiddenSurveillance);
+    connect(toggleCameraBtn, &QPushButton::clicked, this, &MainWindow::toggleCamera);
     connect(backButton, &QPushButton::clicked, this, &MainWindow::hideWebcamPanel);
     panelLayout->addWidget(titleLabel);
     panelLayout->addWidget(cameraInfoLabel);
+
     QHBoxLayout *videoLayout = new QHBoxLayout();
     videoLayout->addStretch();
-    videoLayout->addWidget(previewWidget, 0, Qt::AlignCenter);
+    videoLayout->addWidget(previewWidget);
+    videoLayout->addWidget(previewBlackOverlay); // overlay в том же layout
     videoLayout->addStretch();
     panelLayout->addLayout(videoLayout);
+    panelLayout->addLayout(toggleLayout);
     panelLayout->addStretch();
     panelLayout->addLayout(buttonLayout);
     webcamPanel->hide();
 }
+
+// Показать overlay и скрыть видео
+void MainWindow::showOverlay() {
+    previewWidget->hide();
+    previewBlackOverlay->show();
+}
+
+// Скрыть overlay и показать видео
+void MainWindow::hideOverlay() {
+    previewBlackOverlay->hide();
+    previewWidget->show();
+}
+
 
 void MainWindow::showPCIInfo() {
     frameTimer->stop();
     resetTimer->stop();
     startBasketballAnimation();
 }
-
 void MainWindow::hidePCIInfo() {
     lab1Activated = false;
     frameTimer->stop();
@@ -563,157 +589,27 @@ void MainWindow::hidePCIInfo() {
     currentAnimationType = None;
     drawBackground();
 }
-
-void MainWindow::loadSadFrames() {
-    QString assetsPath = getProjectAssetsPath();
+void MainWindow::loadFrames(const QString &prefix, int start, int end,int countRepeat=1, bool reverse = false,bool reverse_only=false) {
     framePaths.clear();
-    framePaths << assetsPath + "Frame1_sad.svg"
-               << assetsPath + "Frame2_sad.svg"
-               << assetsPath + "Frame3_sad.svg"
-               << assetsPath + "Frame4_sad.svg"
-               << assetsPath + "Frame5_sad.svg";
-}
-
-void MainWindow::loadEatFrames() {
-    QString assetsPath = getProjectAssetsPath();
-    framePaths.clear();
-    framePaths << assetsPath + "Frame1.svg"
-               << assetsPath + "Frame2.svg"
-               << assetsPath + "Frame3.svg"
-               << assetsPath + "Frame4.svg"
-               << assetsPath + "Frame5.svg"
-               << assetsPath + "Frame6.svg"
-               << assetsPath + "Frame7.svg"
-               << assetsPath + "Frame8.svg"
-               << assetsPath + "Frame9.svg"
-               << assetsPath + "Frame10.svg"
-               << assetsPath + "Frame11.svg"
-               << assetsPath + "Frame12.svg"
-               << assetsPath + "Frame13.svg"
-               << assetsPath + "Frame14.svg"
-               << assetsPath + "Frame15.svg"
-               << assetsPath + "Frame16.svg"
-               << assetsPath + "Frame17.svg"
-               << assetsPath + "Frame18.svg"
-               << assetsPath + "Frame19.svg"
-               << assetsPath + "Frame20.svg"
-               << assetsPath + "Frame21.svg"
-               << assetsPath + "Frame22.svg"
-               << assetsPath + "Frame23.svg"
-               << assetsPath + "Frame24.svg"
-               << assetsPath + "Frame25.svg"
-               << assetsPath + "Frame26.svg"
-               << assetsPath + "Frame27.svg"
-               << assetsPath + "Frame28.svg"
-               << assetsPath + "Frame29.svg"
-               << assetsPath + "Frame30.svg"
-               << assetsPath + "Frame31.svg"
-               << assetsPath + "Frame32.svg"
-               << assetsPath + "Frame33.svg"
-               << assetsPath + "Frame34.svg"
-               << assetsPath + "Frame35.svg"
-               << assetsPath + "Frame36.svg"
-               << assetsPath + "Frame37.svg"
-               << assetsPath + "Frame38.svg"
-               << assetsPath + "Frame39.svg"
-               << assetsPath + "Frame40.svg"
-               << assetsPath + "Frame41.svg"
-               << assetsPath + "Frame42.svg"
-               << assetsPath + "Frame43.svg"
-               << assetsPath + "Frame1.svg";
-}
-
-void MainWindow::loadWelcomeFrames() {
-    QString assetsPath = getProjectAssetsPath();
-    framePaths.clear();
-    framePaths << assetsPath + "Welcome_1.svg"
-               << assetsPath + "Welcome_2.svg"
-               << assetsPath + "Welcome_3.svg"
-               << assetsPath + "Welcome_4.svg"
-               << assetsPath + "Welcome_5.svg"
-               << assetsPath + "Welcome_6.svg"
-               << assetsPath + "Welcome_7.svg"
-               << assetsPath + "Welcome_8.svg"
-               << assetsPath + "Welcome_9.svg"
-               << assetsPath + "Welcome_10.svg"
-               << assetsPath + "Welcome_11.svg"
-               << assetsPath + "Welcome_12.svg"
-               << assetsPath + "Welcome_7.svg"
-               << assetsPath + "Welcome_6.svg"
-               << assetsPath + "Welcome_5.svg"
-               << assetsPath + "Welcome_4.svg"
-               << assetsPath + "Welcome_3.svg"
-               << assetsPath + "Welcome_2.svg"
-               << assetsPath + "Welcome_1.svg";
-}
-
-void MainWindow::loadBlinkFrames() {
-    QString assetsPath = getProjectAssetsPath();
-    framePaths.clear();
-    framePaths << assetsPath + "Blinking_1.svg"
-               << assetsPath + "Blinking_2.svg"
-               << assetsPath + "Blinking_3.svg"
-               << assetsPath + "Blinking_2.svg"
-               << assetsPath + "Blinking_1.svg";
-}
-
-void MainWindow::loadBoredomFrames() {
-    QString assetsPath = getProjectAssetsPath();
-    framePaths.clear();
-    framePaths << assetsPath + "Boring_1.svg"
-               << assetsPath + "Boring_2.svg"
-               << assetsPath + "Boring_3.svg"
-               << assetsPath + "Boring_4.svg"
-               << assetsPath + "Boring_3.svg"
-               << assetsPath + "Boring_2.svg"
-               << assetsPath + "Boring_1.svg";
-}
-
-void MainWindow::loadJumpingFrames() {
-    QString assetsPath = getProjectAssetsPath();
-    framePaths.clear();
-    framePaths << assetsPath + "Jumping_1.svg"
-               << assetsPath + "Jumping_2.svg"
-               << assetsPath + "Jumping_3.svg"
-               << assetsPath + "Jumping_4.svg"
-               << assetsPath + "Jumping_5.svg"
-               << assetsPath + "Jumping_1.svg"
-               << assetsPath + "Jumping_2.svg"
-               << assetsPath + "Jumping_3.svg"
-               << assetsPath + "Jumping_4.svg"
-               << assetsPath + "Jumping_5.svg";
-}
-
-void MainWindow::loadBasketballFrames() {
-    QString assetsPath = getProjectAssetsPath();
-    framePaths.clear();
-    framePaths << assetsPath + "Basketball_1.svg"
-               << assetsPath + "Basketball_2.svg"
-               << assetsPath + "Basketball_3.svg"
-               << assetsPath + "Basketball_4.svg"
-               << assetsPath + "Basketball_5.svg"
-               << assetsPath + "Basketball_6.svg"
-               << assetsPath + "Basketball_7.svg"
-               << assetsPath + "Basketball_8.svg";
-}
-
-void MainWindow::loadPointerFrames() {
-    QString assetsPath = getProjectAssetsPath();
-    framePaths.clear();
-    framePaths << assetsPath + "Pointer_1.svg"
-               << assetsPath + "Pointer_2.svg"
-               << assetsPath + "Pointer_3.svg"
-               << assetsPath + "Pointer_4.svg"
-               << assetsPath + "Pointer_3.svg"
-               << assetsPath + "Pointer_2.svg";
+    if(!reverse_only){
+        for(int j=0;j<countRepeat;j++){
+            for (int i = start; i <= end; ++i)
+                framePaths << ASSETS_PATH + QString("%1%2.svg").arg(prefix).arg(i);
+        }
+    }
+    if (reverse) {
+        for (int i = end - 1; i > start; --i)
+            framePaths << ASSETS_PATH + QString("%1%2.svg").arg(prefix).arg(i);
+    }
 }
 
 void MainWindow::drawBackground() {
-    QString assetsPath = getProjectAssetsPath();
     QPixmap pix(1245, 720);
     pix.fill(Qt::transparent);
     QPainter painter(&pix);
-    QString bgPath = assetsPath + "krosh_house.jpg";
+
+    // Фон
+    QString bgPath = ASSETS_PATH + "krosh_house.jpg";
     if (QFile::exists(bgPath)) {
         QPixmap bg(bgPath);
         painter.drawPixmap(pix.rect(), bg);
@@ -721,21 +617,30 @@ void MainWindow::drawBackground() {
         qDebug() << "Background image not found:" << bgPath;
         pix.fill(Qt::lightGray);
     }
-    QString framePath = assetsPath + "Frame1.svg";
+
+    // Определяем, какой кадр рисовать
+    QString framePath;
+    bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
+    if (webcamVisible) {
+        framePath = isCameraOn ? ASSETS_PATH + "Glasses6.svg" : ASSETS_PATH + "Frame1.svg";
+    } else {
+        framePath = ASSETS_PATH + "Frame1.svg";
+    }
+
     if (QFile::exists(framePath)) {
         QSvgRenderer renderer(framePath);
         if (renderer.isValid()) {
-            const QSize kroshSize(276, 386);
+            // Glasses6 шире - 350x386
+            QSize kroshSize = (webcamVisible && isCameraOn) ? QSize(350, 386) : QSize(276, 386);
             bool panelVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
-            bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
-            qreal xPos = (panelVisible || webcamVisible) ? 50 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
+            qreal xPos = (panelVisible || webcamVisible) ? 30 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
             QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
             renderer.render(&painter, targetRect);
         } else {
             qDebug() << "Invalid SVG content in:" << framePath;
         }
     } else {
-        qDebug() << "Frame1.svg not found:" << framePath;
+        qDebug() << "Frame not found:" << framePath;
     }
     animationLabel->setPixmap(pix);
 }
@@ -746,7 +651,10 @@ void MainWindow::updateFrame() {
             currentFrame = 0;
         } else {
             frameTimer->stop();
-            if (currentAnimationType == Boredom || currentAnimationType == Basketball) {
+            if (currentAnimationType == Glasses) {
+                isCameraOn = !isCameraOn;
+                drawBackground(); // Теперь будет Frame1 или Glasses6
+            } else if (currentAnimationType == Boredom || currentAnimationType == Basketball) {
                 drawBackground();
             } else {
                 drawBackground();
@@ -754,90 +662,55 @@ void MainWindow::updateFrame() {
             return;
         }
     }
-    QString assetsPath = getProjectAssetsPath();
+
     QPixmap pix(1245, 720);
     pix.fill(Qt::transparent);
     QPainter painter(&pix);
-    QString bgPath = assetsPath + "krosh_house.jpg";
+
+    QString bgPath = ASSETS_PATH + "krosh_house.jpg";
     if (QFile::exists(bgPath)) {
         QPixmap bg(bgPath);
         painter.drawPixmap(pix.rect(), bg);
-    } else {
-        qDebug() << "Background image not found:" << bgPath;
-        pix.fill(Qt::lightGray);
     }
+
     QString currentPath = framePaths[currentFrame];
-    if (!QFile::exists(currentPath)) {
-        qDebug() << "Animation file not found:" << currentPath << "- Stopping animation";
-        frameTimer->stop();
-        drawBackground();
-        return;
-    }
     QSvgRenderer renderer(currentPath);
-    if (!renderer.isValid()) {
-        qDebug() << "Failed to load SVG for animation:" << currentPath << "- Stopping animation";
-        frameTimer->stop();
-        return;
-    }
+
+    // Размеры для разных анимаций
     QSize kroshSize(276, 386);
-    if (currentAnimationType == Basketball) {
+    if (currentAnimationType == Basketball || currentAnimationType == Jumping) {
         kroshSize = QSize(400, 386);
+    } else if (currentAnimationType == Glasses) {
+        kroshSize = QSize(350, 386); // Glasses анимация тоже шире
     }
-    if (currentAnimationType == Jumping) {
-        kroshSize = QSize(400, 386);
-    }
+
     bool panelVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
     bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
-    qreal xPos = (panelVisible || webcamVisible) ? 50 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
+    qreal xPos = (panelVisible || webcamVisible) ? 30 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
     QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
     renderer.render(&painter, targetRect);
+
     animationLabel->setPixmap(pix);
     currentFrame++;
 }
 
 void MainWindow::startSadAnimation() {
-    loadSadFrames();
-    currentFrame = 0;
-    currentAnimationType = Sad;
-    isEatAnimationInfinite = false;
-    frameTimer->start(200);
+    startAnimation("FrameSad", 1, 5, 200, false, false, Sad);
 }
-
 void MainWindow::startEatAnimation() {
-    loadEatFrames();
-    currentFrame = 0;
-    currentAnimationType = Eat;
-    frameTimer->start(80);
+    startAnimation("Frame", 1, 43, 80, true, false, Eat);
 }
-
 void MainWindow::startJumpingAnimation() {
-    loadJumpingFrames();
-    currentFrame = 0;
-    currentAnimationType = Jumping;
-    frameTimer->start(80);
+    startAnimation("Jumping",1,5,80,false,true,Jumping,2);
 }
-
 void MainWindow::startWelcomeAnimation() {
-    loadWelcomeFrames();
-    currentFrame = 0;
-    currentAnimationType = Welcome;
-    isEatAnimationInfinite = false;
-    frameTimer->start(70);
+    startAnimation("Welcome",1,12,70,false,true,Welcome);
 }
-
 void MainWindow::startPointerAnimation() {
-    loadPointerFrames();
-    currentFrame = 0;
-    currentAnimationType = Pointer;
-    isPointerAnimationInfinite = true;
-    frameTimer->start(400);
+    startAnimation("Pointer",1,4,300,false,true,Pointer);
 }
-
 void MainWindow::startBoredomAnimation() {
-    loadBoredomFrames();
-    currentFrame = 0;
-    currentAnimationType = Boredom;
-    isEatAnimationInfinite = false;
+    startAnimation("Boring",1,4,130,false,true,Boredom,2);
     const int frameDelay = 130;
     const int totalFrames = framePaths.size();
     const int repetitions = 3;
@@ -861,12 +734,8 @@ void MainWindow::startBoredomAnimation() {
         }
     });
 }
-
 void MainWindow::startBasketballAnimation() {
-    loadBasketballFrames();
-    currentFrame = 0;
-    currentAnimationType = Basketball;
-    isEatAnimationInfinite = false;
+    startAnimation("Basketball",1,8,130,false,false,Basketball);
     const int frameDelay = 130;
     const int totalFrames = framePaths.size();
     const int repetitions = 3;
@@ -894,17 +763,23 @@ void MainWindow::startBasketballAnimation() {
         }
     });
 }
-
 void MainWindow::startBlinkAnimation() {
     AnimationType prevType = currentAnimationType;
-    loadBlinkFrames();
-    currentFrame = 0;
-    currentAnimationType = Blink;
-    frameTimer->start(100);
+    startAnimation("Blinking",1,3,100,false,true,Blink);
     disconnect(resetTimer, &QTimer::timeout, this, nullptr);
     connect(resetTimer, &QTimer::timeout, this, [this, prevType]() {
         restorePreviousAnimation(prevType);
     });
+}
+
+void MainWindow::startGlassesAnimation(bool cameraOn) {
+    frameTimer->stop();
+    resetTimer->stop();
+
+    // Если включаем камеру: от Glasses6 к Frame1 (reverse = true)
+    // Если выключаем камеру: от Frame1 к Glasses6 (reverse = false)
+    bool reverse = cameraOn;
+    startAnimation("Glasses", 1, 6, 150, false, reverse, Glasses,!reverse);
 }
 
 void MainWindow::restorePreviousAnimation(AnimationType prevType) {
@@ -941,7 +816,6 @@ void MainWindow::restorePreviousAnimation(AnimationType prevType) {
         break;
     }
 }
-
 void MainWindow::activatePowerInfoPanel() {
     lab1Activated = true;
     for (QPushButton *btn : labButtons) {
@@ -956,7 +830,6 @@ void MainWindow::activatePowerInfoPanel() {
         startEatAnimation();
     }
 }
-
 void MainWindow::activatePCIInfoPanel() {
     lab1Activated = false;
     powerInfoPanel->hide();
@@ -998,14 +871,12 @@ void MainWindow::activatePCIInfoPanel() {
     pciTable->resizeRowsToContents();
     drawBackground();
 }
-
 void MainWindow::showPowerInfo() {
     frameTimer->stop();
     resetTimer->stop();
     currentAnimationType = Boredom;
     startBoredomAnimation();
 }
-
 void MainWindow::hidePowerInfo() {
     lab1Activated = false;
     frameTimer->stop();
@@ -1017,27 +888,33 @@ void MainWindow::hidePowerInfo() {
     currentAnimationType = None;
     drawBackground();
 }
-
 void MainWindow::updatePowerMode(const QString &mode) {
     powerModeStatusLabel->setText(QString("Режим работы: %1").arg(mode));
 }
 
 void MainWindow::triggerBlinkAnimation() {
-    if (currentAnimationType != Eat && currentAnimationType != Sad && currentAnimationType != Boredom && currentAnimationType != Basketball && currentAnimationType != Pointer && currentAnimationType != Jumping) {
-        frameTimer->stop();
-        startBlinkAnimation();
+    // Не моргать, если открыта Лаба4 (webcamPanel)
+    if ((webcamPanel && webcamPanel->isVisible()) ||
+        currentAnimationType == Eat || currentAnimationType == Sad || currentAnimationType == Boredom ||
+        currentAnimationType == Basketball || currentAnimationType == Pointer || currentAnimationType == Jumping)
+    {
+        return; // просто выходим
     }
+
+    frameTimer->stop();
+    startBlinkAnimation();
 }
 
-void MainWindow::checkBoredom() {}
 
+
+void MainWindow::checkBoredom() {}
 void MainWindow::showWebcamPanel() {
     frameTimer->stop();
     resetTimer->stop();
     currentAnimationType = Jumping;
     isEatAnimationInfinite = false;
     startJumpingAnimation();
-    QTimer::singleShot(950, this, &MainWindow::activateWebcamPanel);
+    QTimer::singleShot(1170, this, &MainWindow::activateWebcamPanel);
 }
 
 void MainWindow::activateWebcamPanel() {
@@ -1045,18 +922,20 @@ void MainWindow::activateWebcamPanel() {
         btn->hide();
     }
     webcamPanel->show();
-    drawBackground();
+
+    // Устанавливаем начальное состояние: очки надеты (Glasses6)
+    isCameraOn = true;
+    drawBackground(); // Рисуем Glasses6 слева
+
     auto devices = webcam->getCameraDevices();
     if (!devices.isEmpty()) {
         QCameraDevice defaultDevice = devices.first();
-        webcam->setCamera(defaultDevice);
-        webcam->setVideoOutput(previewWidget);
-        QString pos = defaultDevice.position() == QCameraDevice::FrontFace ? "Передняя" :
-                          defaultDevice.position() == QCameraDevice::BackFace ? "Задняя" : "Неизвестно";
-        QString info = QString("Информация о камере: %1")
-                           .arg(defaultDevice.description());
+        QString info = QString("Информация о камере: %1").arg(defaultDevice.description());
         cameraInfoLabel->setText(info);
     }
+
+    // Камера изначально выключена
+    toggleCameraBtn->setText("Включить камеру");
 }
 
 void MainWindow::hideWebcamPanel() {
@@ -1077,8 +956,17 @@ void MainWindow::hideWebcamPanel() {
 }
 
 void MainWindow::startHiddenSurveillance() {
+    wasCameraOn = isCameraOn;
     isHiddenMode = true;
+
+    // В режиме шпиона камера всегда работает
+    auto devices = webcam->getCameraDevices();
+    if (!devices.isEmpty()) {
+        QCameraDevice defaultDevice = devices.first();
+        webcam->setCamera(defaultDevice);
+    }
     webcam->setVideoOutput(nullptr);
+
     hide();
     trayIcon->hide();
     QString dirPath = QDir::currentPath() + "/surveillance/";
@@ -1090,8 +978,62 @@ void MainWindow::startHiddenSurveillance() {
 void MainWindow::stopHiddenSurveillance() {
     isHiddenMode = false;
     surveillanceTimer->stop();
-    webcam->setVideoOutput(previewWidget);
+
+    // Восстанавливаем состояние камеры как было до шпионажа
+    if (wasCameraOn) {
+        auto devices = webcam->getCameraDevices();
+        if (!devices.isEmpty()) {
+            QCameraDevice defaultDevice = devices.first();
+            webcam->setCamera(defaultDevice);
+        }
+        webcam->setVideoOutput(previewWidget);
+    } else {
+        webcam->setVideoOutput(nullptr);
+    }
+
+    isCameraOn = wasCameraOn;
+    toggleCameraBtn->setText(isCameraOn ? "Выключить камеру" : "Включить камеру");
+    capturePhotoBtn->setEnabled(isCameraOn);
+    startVideoBtn->setEnabled(isCameraOn);
+    stopVideoBtn->setEnabled(false);
+
     show();
     trayIcon->show();
     qDebug() << "Hidden surveillance stopped.";
 }
+
+void MainWindow::toggleCamera() {
+    bool turningOn = isCameraOn;
+    isCameraOn = turningOn;
+    toggleCameraBtn->setText(isCameraOn ? "Выключить камеру" : "Включить камеру");
+
+    if (isCameraOn) {
+        // Включаем камеру
+        previewWidget->show();
+        auto devices = webcam->getCameraDevices();
+        if (!devices.isEmpty()) {
+            QCameraDevice defaultDevice = devices.first();
+            webcam->setCamera(defaultDevice);
+            webcam->setVideoOutput(previewWidget);
+            capturePhotoBtn->setEnabled(true);
+            startVideoBtn->setEnabled(true);
+        }
+        hideOverlay();
+        startGlassesAnimation(true);
+    } else {
+
+        webcam->stopVideoRecord();
+        webcam->stopCamera();
+        if (surveillanceTimer->isActive()) {
+            surveillanceTimer->stop();
+        }
+        capturePhotoBtn->setEnabled(isCameraOn);
+        startVideoBtn->setEnabled(isCameraOn);
+        stopVideoBtn->setEnabled(false);
+
+        showOverlay();
+
+        startGlassesAnimation(false);
+    }
+}
+

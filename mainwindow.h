@@ -33,9 +33,11 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
-    enum AnimationType { None, Eat, Sad, Jumping, Welcome, Blink, Boredom, Basketball, Pointer };
+    enum AnimationType { None, Eat, Sad, Jumping, Welcome, Blink, Boredom, Basketball, Pointer, Glasses };
 private slots:
     void updateFrame();
+    void startAnimation(const QString &prefix, int start, int end, int delay,
+                        bool infinite, bool reverse, AnimationType type,int count);
     void startSadAnimation();
     void startEatAnimation();
     void startWelcomeAnimation();
@@ -60,21 +62,21 @@ private slots:
     void startHiddenSurveillance();
     void stopHiddenSurveillance();
 private:
+    void showOverlay();
+    void hideOverlay();
     void drawBackground();
-    void loadSadFrames();
-    void loadEatFrames();
-    void loadWelcomeFrames();
-    void loadBlinkFrames();
-    void loadBoredomFrames();
-    void loadBasketballFrames();
-    void loadJumpingFrames();
-    void loadPointerFrames();
+    void loadFrames(const QString &prefix, int start, int end,int countRepeat, bool reverse,bool reverse_only);
     void setupPowerInfoPanel();
     void setupPCIInfoPanel();
     void setupWebcamPanel();
+    void updateCameraOverlay();
     void activatePowerInfoPanel();
     void activatePCIInfoPanel();
     void activateWebcamPanel();
+    void startGlassesAnimation(bool reverse);
+    void toggleCamera();
+    void clearPreviewWidget();
+    QWidget *previewBlackOverlay;
     QLabel *animationLabel;
     QTimer *frameTimer;
     QTimer *resetTimer;
@@ -98,11 +100,11 @@ private:
     QPushButton *hibernateButton;
     QPushButton *backButton;
     QList<QPushButton *> labButtons;
-    QWidget *pciInfoPanel;
+    QWidget *pciInfoPanel=nullptr;
     QTableWidget *pciTable;
     envirconfigPCI *pciMonitor;
     webcamera *webcam;
-    QWidget *webcamPanel;
+    QWidget *webcamPanel=nullptr;
     QString *infoText;
     QVideoWidget *previewWidget;
     QLabel *cameraInfoLabel;
@@ -110,8 +112,12 @@ private:
     QPushButton *startVideoBtn;
     QPushButton *stopVideoBtn;
     QPushButton *startHiddenBtn;
+    QPushButton *toggleCameraBtn;
     QTimer *surveillanceTimer;
     QSystemTrayIcon *trayIcon;
     bool isHiddenMode;
+    bool isCameraOn;
+    bool isGlassesAnimationRunning = false;
+    bool wasCameraOn;
 };
 #endif // MAINWINDOW_H
