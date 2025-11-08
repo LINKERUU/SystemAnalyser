@@ -6,8 +6,10 @@
 #include <QClipboard>
 #include <QShortcut>
 #include <QGuiApplication>
+#include <QMessageBox>
 #include <QPainter>
 #include <QSvgRenderer>
+#include <QMessageBox>
 #include <QLabel>
 #include <QDebug>
 #include <QDir>
@@ -16,6 +18,17 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QFontMetrics>
+#include <windows.h> // <-- Добавить
+#include <Dbt.h>
+// mainwindow.cpp
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+    MSG* msg = static_cast<MSG*>(message);
+    if (msg->message == WM_DEVICECHANGE) {
+        UsbMonitor::getInstance()->handleDeviceChange(msg->message, msg->wParam);
+    }
+    return false;
+}
 QString getProjectAssetsPath() {
     QString sourceFilePath = __FILE__;
     QDir sourceDir(sourceFilePath);
@@ -82,6 +95,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     QPushButton *lab1Button = nullptr;
     QPushButton *lab2Button = nullptr;
     QPushButton *lab4Button = nullptr;
+    QPushButton *lab5Button = nullptr;
     for (int i = 0; i < labNames.size(); ++i) {
         QPushButton *btn = new QPushButton(labNames[i], animationLabel);
         btn->setFixedSize(160, 40);
@@ -105,10 +119,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
         if (i == 0) lab1Button = btn;
         if (i == 1) lab2Button = btn;
         if (i == 3) lab4Button = btn;
+        if (i == 4) lab5Button = btn;
     }
     connect(lab1Button, &QPushButton::clicked, this, &MainWindow::showPowerInfo);
     connect(lab2Button, &QPushButton::clicked, this, &MainWindow::showPCIInfo);
     connect(lab4Button, &QPushButton::clicked, this, &MainWindow::showWebcamPanel);
+    connect(lab5Button, &QPushButton::clicked, this, &MainWindow::showUsbInfo);
     drawBackground();
     frameTimer = new QTimer(this);
     connect(frameTimer, &QTimer::timeout, this, &MainWindow::updateFrame);
@@ -128,6 +144,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     setupPowerInfoPanel();
     setupPCIInfoPanel();
     setupWebcamPanel();
+    setupUsbInfoPanel();
+    UsbMonitor* monitor = UsbMonitor::getInstance();
+    // 2. Получаем HWND
+    HWND hWnd = (HWND)winId();
+    // 3. Регистрируем уведомления
+    // Ошибка: 'registerForDeviceNotifications'
+    monitor->registerNotifications(hWnd);
+    // 5. Первоначальное заполнение таблицы
+    // Ошибка: 'no matching function for call to updateUsbTable()'
+    // Исправлено: Вызываем с параметром, который она ожидает.
+    updateUsbTable(monitor->getUsbDevices());
+    connect(UsbMonitor::getInstance(), &UsbMonitor::devicesChanged,
+            this, &MainWindow::onDevicesChanged);
     connect(pciTable->horizontalHeader(), &QHeaderView::sectionResized, this, [=](int logicalIndex, int newSize) {
         if (logicalIndex == 3) {
             QFontMetrics metrics(pciTable->font());
@@ -203,6 +232,249 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     connect(stopSurveillanceShortcut, &QShortcut::activated, this, &MainWindow::stopHiddenSurveillance);
 }
 MainWindow::~MainWindow() {}
+
+void MainWindow::setupUsbInfoPanel() {
+    usbInfoPanel = new QWidget(animationLabel);
+    usbInfoPanel->setFixedSize(640, 600); // немного шире
+    usbInfoPanel->move(570, 35); // сдвинули правее
+    usbInfoPanel->setStyleSheet(R"(
+        QWidget {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 rgba(255, 255, 255, 250),
+                stop:1 rgba(240, 245, 255, 230));
+            border-radius: 15px;
+        }
+    )");
+    QVBoxLayout *panelLayout = new QVBoxLayout(usbInfoPanel);
+    panelLayout->setContentsMargins(20, 20, 20, 20);
+    panelLayout->setSpacing(15);
+    QLabel *titleLabel = new QLabel("Подключенные USB устройства", usbInfoPanel);
+    titleLabel->setFont(QFont("Arial", 20, QFont::Bold));
+    titleLabel->setAlignment(Qt::AlignCenter);
+    titleLabel->setStyleSheet(R"(
+        background: transparent;
+        color: #2C5AA0;
+        padding: 8px;
+    )");
+    usbTable = new QTableWidget(usbInfoPanel);
+    usbTable->setRowCount(0);
+    usbTable->setColumnCount(3);
+    usbTable->setHorizontalHeaderLabels({"Тип устройства", "Название", "Диск"});
+    usbTable->setStyleSheet(R"(
+        QTableWidget {
+            background: rgba(255, 255, 255, 240);
+            font-family: 'Segoe UI', Arial;
+            font-size: 14px;
+            color: #333333;
+            border: 1px solid rgba(74, 144, 226, 100);
+            border-radius: 12px;
+            gridline-color: rgba(74, 144, 226, 40);
+            alternate-background-color: rgba(248, 250, 255, 200);
+        }
+        QHeaderView::section {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(74, 144, 226, 240),
+                stop:1 rgba(53, 122, 189, 220));
+            color: white;
+            font-weight: bold;
+            font-size: 15px;
+            padding: 12px 8px;
+            border: none;
+        }
+        QHeaderView::section:hover {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(53, 122, 189, 255),
+                stop:1 rgba(44, 90, 160, 240));
+        }
+        QTableWidget::item {
+            padding: 12px 8px;
+            border-bottom: 1px solid rgba(74, 144, 226, 30);
+            border-left: 1px solid rgba(74, 144, 226, 20);
+        }
+        QTableWidget::item:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 rgba(74, 144, 226, 15),
+                stop:1 rgba(74, 144, 226, 5));
+            color: #2C5AA0;
+        }
+        QTableWidget::item:selected {
+            background: rgba(74, 144, 226, 100);
+            color: white;
+        }
+        QTableCornerButton::section {
+            background: rgba(74, 144, 226, 200);
+            border: none;
+            border-top-left-radius: 12px;
+        }
+        QScrollBar:vertical {
+            background: rgba(240, 245, 255, 200);
+            width: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:vertical {
+            background: rgba(74, 144, 226, 150);
+            border-radius: 6px;
+            min-height: 20px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: rgba(74, 144, 226, 200);
+        }
+    )");
+    usbTable->horizontalHeader()->setStretchLastSection(true);
+    usbTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch); // растягивает все колонки равномерно
+    usbTable->verticalHeader()->setVisible(false);
+    usbTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    usbTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    usbTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    usbTable->setFocusPolicy(Qt::NoFocus);
+    usbTable->setAlternatingRowColors(true);
+    usbTable->resizeColumnsToContents(); // дополнительно подгоняем ширину под содержимое перед растяжкой
+    QPushButton *backButton = new QPushButton(" Назад", usbInfoPanel);
+    backButton->setFixedSize(120, 40);
+    backButton->setStyleSheet(R"(
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(74, 144, 226, 240),
+                stop:1 rgba(53, 122, 189, 220));
+            color: white;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            border: none;
+            padding: 4px 12px;
+        }
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(53, 122, 189, 255),
+                stop:1 rgba(44, 90, 160, 240));
+        }
+        QPushButton:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(44, 90, 160, 240),
+                stop:1 rgba(74, 144, 226, 200));
+        }
+    )");
+    QPushButton *safeRemoveBtn = new QPushButton("Безопасное извлечение", usbInfoPanel);
+    QPushButton *denyRemoveBtn = new QPushButton("Отказ безопасного извлечения", usbInfoPanel);
+    QList<QPushButton*> eventButtons = { safeRemoveBtn, denyRemoveBtn };
+    for (auto *btn : eventButtons) {
+        btn->setMinimumWidth(220);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setFixedHeight(50);
+        btn->setStyleSheet(R"(
+            QPushButton {
+                background-color: rgba(74, 144, 226, 220);
+                color: white;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(53, 122, 189, 220);
+            }
+            QPushButton:pressed {
+                background-color: rgba(44, 90, 160, 240);
+            }
+            QPushButton:disabled {
+                background-color: rgba(74, 144, 226, 100);
+            }
+        )");
+    }
+    QHBoxLayout *eventsLayout = new QHBoxLayout();
+    eventsLayout->setSpacing(15);
+    eventsLayout->setAlignment(Qt::AlignCenter);
+    eventsLayout->addStretch();
+    eventsLayout->addWidget(safeRemoveBtn);
+    eventsLayout->addWidget(denyRemoveBtn);
+    eventsLayout->addStretch();
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(backButton);
+    buttonLayout->addStretch();
+    panelLayout->addWidget(titleLabel);
+    panelLayout->addWidget(usbTable, 1);
+    panelLayout->addLayout(eventsLayout);
+    panelLayout->addLayout(buttonLayout);
+    connect(backButton, &QPushButton::clicked, this, &MainWindow::hideUsbInfo);
+    safeRemoveBtn->setEnabled(false);
+    denyRemoveBtn->setEnabled(false);
+    connect(usbTable, &QTableWidget::itemSelectionChanged, this, [=]() {
+        bool hasSelection = !usbTable->selectedItems().isEmpty();
+        safeRemoveBtn->setEnabled(hasSelection);
+        denyRemoveBtn->setEnabled(hasSelection);
+    });
+    connect(safeRemoveBtn, &QPushButton::clicked, this, [=]() {
+        int row = usbTable->currentRow();
+        QList<UsbDevice> devices = UsbMonitor::getInstance()->getUsbDevices();
+        if (row >= 0 && row < devices.size()) {
+            const UsbDevice& dev = devices[row];
+            UsbMonitor::getInstance()->ejectSafe(dev);
+        }
+    });
+
+    connect(denyRemoveBtn, &QPushButton::clicked, this, [=]() {
+        int row = usbTable->currentRow();
+        QList<UsbDevice> devices = UsbMonitor::getInstance()->getUsbDevices();
+        if (row >= 0 && row < devices.size()) {
+            const UsbDevice& dev = devices[row];
+            UsbMonitor::getInstance()->denyEject(dev);
+        }
+    });
+
+    usbInfoPanel->hide();
+}
+
+void MainWindow::showUsbInfo() {
+    frameTimer->stop();
+    resetTimer->stop();
+    currentAnimationType = Funny;
+    startFunnyAnimation();
+    QTimer::singleShot(4000, this, &MainWindow::activateUsbPanel); // 8 кадров * 100ms * 3 = 2400ms
+}
+void MainWindow::activateUsbPanel() {
+    for (QPushButton *btn : labButtons) {
+        btn->hide();
+    }
+    usbInfoPanel->show();
+    currentAnimationType = None;
+    drawBackground();
+}
+void MainWindow::onDevicesChanged()
+{
+    QList<UsbDevice> devices = UsbMonitor::getInstance()->getUsbDevices();
+    updateUsbTable(devices);
+}
+void MainWindow::hideUsbInfo() {
+    lab1Activated = false;
+    usbInfoPanel->hide();
+    for (QPushButton *btn : labButtons) {
+        btn->show();
+    }
+    currentAnimationType = None;
+    drawBackground();
+}
+
+void MainWindow::updateUsbTable(const QList<UsbDevice>& devices)
+{
+    usbTable->setRowCount(devices.size());
+    int row = 0;
+    for (const auto& dev : devices)
+    {
+        // ... (DEBUG ВЫВОД)
+        // Тип устройства ("storage" или "hid")
+        QTableWidgetItem *typeItem = new QTableWidgetItem(dev.type.toUpper());
+        usbTable->setItem(row, 0, typeItem); // <-- ИСПРАВЛЕНО
+        // Описание (Friendly Name / Device Description)
+        QTableWidgetItem *descItem = new QTableWidgetItem(dev.description);
+        usbTable->setItem(row, 1, descItem); // <-- ИСПРАВЛЕНО
+        // Буква диска (только для "storage")
+        QString drive = (dev.type == "USB-накопитель") ? dev.driveLetter : "-";
+        QTableWidgetItem *driveItem = new QTableWidgetItem(drive);
+        usbTable->setItem(row, 2, driveItem);
+        row++;
+    }
+}
+
 void MainWindow::startAnimation(const QString &prefix, int start, int end, int delay,
                                 bool infinite = false, bool reverse = false, AnimationType type = None,int count=1) {
     loadFrames(prefix, start, end, count, reverse,false);
@@ -303,6 +575,8 @@ void MainWindow::setupPowerInfoPanel() {
     connect(backButton, &QPushButton::clicked, this, &MainWindow::hidePowerInfo);
     powerInfoPanel->hide();
 }
+
+
 void MainWindow::setupPCIInfoPanel() {
     pciInfoPanel = new QWidget(animationLabel);
     pciInfoPanel->setFixedSize(770, 680);
@@ -473,6 +747,8 @@ void MainWindow::setupWebcamPanel() {
     previewBlackOverlay->setStyleSheet("background-color: black; border-radius:0;");
     previewBlackOverlay->hide();
 
+
+
     capturePhotoBtn = new QPushButton("Сделать фото", webcamPanel);
     startVideoBtn = new QPushButton("Начать видео", webcamPanel);
     stopVideoBtn = new QPushButton("Остановить", webcamPanel);
@@ -559,6 +835,7 @@ void MainWindow::setupWebcamPanel() {
     webcamPanel->hide();
 }
 
+
 // Показать overlay и скрыть видео
 void MainWindow::showOverlay() {
     previewWidget->hide();
@@ -619,8 +896,12 @@ void MainWindow::drawBackground() {
     }
 
     // Определяем, какой кадр рисовать
+    // Определяем, какой кадр рисовать
     QString framePath;
     bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
+    bool usbVisible = usbInfoPanel ? usbInfoPanel->isVisible() : false;
+    bool pciVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
+
     if (webcamVisible) {
         framePath = isCameraOn ? ASSETS_PATH + "Glasses6.svg" : ASSETS_PATH + "Frame1.svg";
     } else {
@@ -630,10 +911,10 @@ void MainWindow::drawBackground() {
     if (QFile::exists(framePath)) {
         QSvgRenderer renderer(framePath);
         if (renderer.isValid()) {
-            // Glasses6 шире - 350x386
             QSize kroshSize = (webcamVisible && isCameraOn) ? QSize(350, 386) : QSize(276, 386);
-            bool panelVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
-            qreal xPos = (panelVisible || webcamVisible) ? 30 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
+            bool panelVisible = pciVisible || webcamVisible;
+
+            qreal xPos = panelVisible ? 30 : (lab1Activated || usbVisible ? 250 : (pix.width() - kroshSize.width()) / 2.0);
             QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
             renderer.render(&painter, targetRect);
         } else {
@@ -649,7 +930,14 @@ void MainWindow::updateFrame() {
     if (currentFrame >= framePaths.size()) {
         if ((isEatAnimationInfinite && currentAnimationType == Eat) || currentAnimationType == Pointer) {
             currentFrame = 0;
-        } else {
+        } else if (currentAnimationType == Funny) {
+            // Завершили Funny - активируем панель
+            activateUsbPanel();
+            frameTimer->stop();
+            currentAnimationType = None;
+            return;
+        }
+        else {
             frameTimer->stop();
             if (currentAnimationType == Glasses) {
                 isCameraOn = !isCameraOn;
@@ -683,10 +971,14 @@ void MainWindow::updateFrame() {
     } else if (currentAnimationType == Glasses) {
         kroshSize = QSize(350, 386); // Glasses анимация тоже шире
     }
+    else if (currentAnimationType == Funny) {
+        kroshSize = QSize(380, 416); // Glasses анимация тоже шире
+    }
 
     bool panelVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
     bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
-    qreal xPos = (panelVisible || webcamVisible) ? 30 : (lab1Activated ? 250 : (pix.width() - kroshSize.width()) / 2.0);
+    bool usbVisible = usbInfoPanel ? usbInfoPanel->isVisible() : false;
+    qreal xPos = (panelVisible || webcamVisible) ? 30 : (lab1Activated || usbVisible ? 250 : (pix.width() - kroshSize.width()) / 2.0);
     QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
     renderer.render(&painter, targetRect);
 
@@ -694,6 +986,9 @@ void MainWindow::updateFrame() {
     currentFrame++;
 }
 
+void MainWindow::startFunnyAnimation() {
+    startAnimation("Funny", 1, 12, 100, false, false, Funny,3);
+}
 void MainWindow::startSadAnimation() {
     startAnimation("FrameSad", 1, 5, 200, false, false, Sad);
 }
@@ -802,6 +1097,9 @@ void MainWindow::restorePreviousAnimation(AnimationType prevType) {
     case Basketball:
         startBasketballAnimation();
         break;
+    case Funny:
+        startFunnyAnimation();
+        break;
     case Pointer:
         if (isPointerAnimationInfinite) {
             startPointerAnimation();
@@ -809,6 +1107,7 @@ void MainWindow::restorePreviousAnimation(AnimationType prevType) {
             drawBackground();
         }
         break;
+
     case None:
     case Welcome:
     case Blink:
@@ -894,9 +1193,11 @@ void MainWindow::updatePowerMode(const QString &mode) {
 
 void MainWindow::triggerBlinkAnimation() {
     // Не моргать, если открыта Лаба4 (webcamPanel)
-    if ((webcamPanel && webcamPanel->isVisible()) ||
+    if ((
+         webcamPanel && webcamPanel->isVisible()) ||
         currentAnimationType == Eat || currentAnimationType == Sad || currentAnimationType == Boredom ||
-        currentAnimationType == Basketball || currentAnimationType == Pointer || currentAnimationType == Jumping)
+        currentAnimationType == Basketball || currentAnimationType == Pointer || currentAnimationType == Jumping
+        || currentAnimationType==Funny)
     {
         return; // просто выходим
     }
@@ -1036,4 +1337,3 @@ void MainWindow::toggleCamera() {
         startGlassesAnimation(false);
     }
 }
-

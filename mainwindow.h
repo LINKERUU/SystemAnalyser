@@ -17,6 +17,8 @@
 #include "powermonitor.h"
 #include "envirconfigpci.h"
 #include "webcamera.h"
+#include "usbmonitor.h"
+
 class BatteryWidget : public QLabel {
     Q_OBJECT
 public:
@@ -28,18 +30,27 @@ private:
     QSvgRenderer *renderer;
     int batteryLevel;
 };
+
+
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
-    enum AnimationType { None, Eat, Sad, Jumping, Welcome, Blink, Boredom, Basketball, Pointer, Glasses };
+    enum AnimationType { None, Eat, Sad, Jumping, Welcome, Blink, Boredom, Basketball, Pointer, Glasses, Funny };
+
+protected:
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
+
 private slots:
+    void onDevicesChanged();
     void updateFrame();
     void startAnimation(const QString &prefix, int start, int end, int delay,
                         bool infinite, bool reverse, AnimationType type,int count);
     void startSadAnimation();
     void startEatAnimation();
+    void startFunnyAnimation();
     void startWelcomeAnimation();
     void startBoredomAnimation();
     void startBasketballAnimation();
@@ -62,6 +73,11 @@ private slots:
     void startHiddenSurveillance();
     void stopHiddenSurveillance();
 private:
+    void setupUsbInfoPanel();
+    void showUsbInfo();
+    void activateUsbPanel();
+    void hideUsbInfo();
+    void updateUsbTable(const QList<UsbDevice>& devices);
     void showOverlay();
     void hideOverlay();
     void drawBackground();
@@ -99,11 +115,15 @@ private:
     QPushButton *sleepButton;
     QPushButton *hibernateButton;
     QPushButton *backButton;
+    QPushButton *rejectBtn;
     QList<QPushButton *> labButtons;
     QWidget *pciInfoPanel=nullptr;
+    QWidget *usbInfoPanel=nullptr;
+    QTableWidget *usbTable;
     QTableWidget *pciTable;
     envirconfigPCI *pciMonitor;
     webcamera *webcam;
+    UsbMonitor *usbMonitor;
     QWidget *webcamPanel=nullptr;
     QString *infoText;
     QVideoWidget *previewWidget;
@@ -116,6 +136,8 @@ private:
     QTimer *surveillanceTimer;
     QSystemTrayIcon *trayIcon;
     bool isHiddenMode;
+    bool isStorage  = false;
+    QVector<UsbDevice> devices;
     bool isCameraOn;
     bool isGlassesAnimationRunning = false;
     bool wasCameraOn;
