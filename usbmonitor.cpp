@@ -2,6 +2,8 @@
 // Windows API
 #include <windows.h>
 #include <QMessageBox>
+#include <QtConcurrent/QtConcurrent>
+#include <QFutureWatcher>
 #include <setupapi.h>
 #include <cfgmgr32.h> // DEVINST, CM_Locate_DevNode, CM_Get_DevNode_Property
 #include <devpkey.h> // DEVPKEY_Device_BusTypeGuid
@@ -11,6 +13,7 @@
 #include <Dbt.h>
 #include <winioctl.h>
 #include <QRegularExpression>
+
 // Определение GUID для HID-устройств (должно быть только в одном .cpp)
 DEFINE_GUID(GUID_DEVINTERFACE_HID, 0x4d1e55b2, 0xf16f, 0x11cf, 0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30);
 // --- Singleton Implementation ---
@@ -243,6 +246,8 @@ static bool isValidDeviceName(const QString &name) {
     return true;
 }
 
+
+
 // --- Обработчик изменений ---
 bool UsbMonitor::handleDeviceChange(UINT message, WPARAM wParam)
 {
@@ -272,23 +277,49 @@ bool UsbMonitor::handleDeviceChange(UINT message, WPARAM wParam)
 
                 if (!stillConnected)
                 {
-                    QString name = oldDev.description + (oldDev.driveLetter.isEmpty() ? "" : " (" + oldDev.driveLetter + ")");
+                    QString safeDescription = oldDev.description;
+                    QString safeDrive = oldDev.driveLetter;
+                    QString safePath = oldDev.path;
 
-                    // 💥 фильтруем битые имена
+                    // ⚙️ защита от битых данных — иногда QString внутри структуры уже невалиден
+                    auto sanitize = [](const QString &s) -> QString {
+                        if (s.isEmpty()) return "";
+                        QString trimmed = s.trimmed();
+                        // если содержит невалидные символы (в том числе мусор)
+                        if (trimmed.contains(QRegularExpression("[\\x00-\\x1F\\x7F]"))) return "(битое имя)";
+                        return trimmed;
+                    };
+
+                    safeDescription = sanitize(safeDescription);
+                    safeDrive = sanitize(safeDrive);
+                    safePath = sanitize(safePath);
+
+                    QString name = safeDescription;
+                    if (!safeDrive.isEmpty())
+                        name += " (" + safeDrive + ")";
+
+                    // 💥 фильтруем битые имена — двойная защита
                     if (!isValidDeviceName(name)) {
                         qDebug() << "⚙️ Пропущено битое уведомление:" << name;
                         continue;
                     }
 
-                    if (safelyEjectedDevices.contains(oldDev.path)) {
+                    if (safelyEjectedDevices.contains(oldDev.path) ||
+                        safelyEjectedDevices.contains(oldDev.description))
+                    {
+                        qDebug() << "✅ Устройство было безопасно извлечено:" << name;
                         safelyEjectedDevices.remove(oldDev.path);
-                        qDebug() << "✅ Устройство было безопасно извлечено ранее:" << name;
-                    } else {
-                        qWarning() << "⚠️ Устройство извлечено небезопасно:" << name;
+                        safelyEjectedDevices.remove(oldDev.description);
+                        continue;
+                    }
+
+                    // 🧠 Показываем сообщение безопасно через очередь GUI (на случай фоновых сигналов)
+                    QMetaObject::invokeMethod(qApp, [name]() {
                         QMessageBox::warning(nullptr,
                                              "Небезопасное извлечение!",
                                              "Устройство " + name + " было извлечено небезопасным способом.");
-                    }
+                    }, Qt::QueuedConnection);
+
                 }
 
             }
@@ -309,89 +340,189 @@ bool UsbMonitor::handleDeviceChange(UINT message, WPARAM wParam)
 // Реальная функция безопасного извлечения
 bool lockAndDismountVolume(const QString& driveLetter)
 {
+    // Открываем том как \\.\F:
     QString path = QStringLiteral("\\\\.\\%1").arg(driveLetter.left(2)); // "\\.\F:"
     HANDLE hVolume = CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()),
                                  GENERIC_READ | GENERIC_WRITE,
                                  FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                 nullptr, OPEN_EXISTING, 0, nullptr);
-
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hVolume == INVALID_HANDLE_VALUE) {
-        qWarning() << "❌ Не удалось открыть том для блокировки:" << path;
+        qWarning() << "❌ Не удалось открыть том для блокировки:" << path << " Error:" << GetLastError();
         return false;
     }
 
-    DWORD bytesReturned;
-    BOOL result = DeviceIoControl(hVolume, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &bytesReturned, nullptr);
-    if (!result) {
-        qWarning() << "⚠️ Не удалось заблокировать том:" << path;
+    // Сбрасываем буферы — важно
+    if (!FlushFileBuffers(hVolume)) {
+        qWarning() << "⚠️ FlushFileBuffers failed:" << GetLastError();
+        // не прерываем, пробуем дальше
+    }
+
+    DWORD bytesReturned = 0;
+
+    // Попытка заблокировать том (FSCTL_LOCK_VOLUME)
+    if (!DeviceIoControl(hVolume, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &bytesReturned, nullptr)) {
+        qWarning() << "⚠️ FSCTL_LOCK_VOLUME failed:" << GetLastError();
+        // Попытка ещё раз после небольшой паузы — иногда помогает
+        Sleep(50);
+        if (!DeviceIoControl(hVolume, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &bytesReturned, nullptr)) {
+            CloseHandle(hVolume);
+            return false;
+        }
+    }
+
+    // Dismount
+    if (!DeviceIoControl(hVolume, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &bytesReturned, nullptr)) {
+        qWarning() << "⚠️ FSCTL_DISMOUNT_VOLUME failed:" << GetLastError();
+        // разблокируем и выходим
+        DeviceIoControl(hVolume, FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &bytesReturned, nullptr);
         CloseHandle(hVolume);
         return false;
     }
 
-    result = DeviceIoControl(hVolume, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &bytesReturned, nullptr);
-    if (!result) {
-        qWarning() << "⚠️ Не удалось размонтировать том:" << path;
-        CloseHandle(hVolume);
-        return false;
-    }
+    // Eject media (если поддерживается)
+    DeviceIoControl(hVolume, IOCTL_STORAGE_EJECT_MEDIA, nullptr, 0, nullptr, 0, &bytesReturned, nullptr);
 
-    qDebug() << "✅ Том заблокирован и размонтирован:" << path;
+    // Закрываем дескриптор — система должна отпустить объем
+    DeviceIoControl(hVolume, FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &bytesReturned, nullptr);
     CloseHandle(hVolume);
+
+    qDebug() << "✅ Том заблокирован, размонтирован и готов к извлечению:" << path;
     return true;
 }
 
+// Унифицированная и асинхронная ejectSafe — для HID и для USB-накопителей
 void UsbMonitor::ejectSafe(const UsbDevice& dev)
 {
+    QMetaObject::invokeMethod(qApp, [dev]() {
+        UsbMonitor::getInstance()->safelyEjectedDevices.insert(dev.path);
+        UsbMonitor::getInstance()->safelyEjectedDevices.insert(dev.description);
+    });
+
     QString name = dev.description;
     if (!dev.driveLetter.isEmpty()) name += " (" + dev.driveLetter + ")";
-    qDebug() << "🔒 Попытка безопасного извлечения устройства" << name;
+    qDebug() << "[Async] Попытка безопасного извлечения устройства" << name;
 
-    // 1️⃣ Пытаемся заблокировать и размонтировать
-    if (!dev.driveLetter.isEmpty()) {
-        if (!lockAndDismountVolume(dev.driveLetter)) {
-            qWarning() << "⚠️ Не удалось подготовить том к извлечению:" << dev.driveLetter;
+    // Запускаем всю работу в фоновой задаче — UI не будет виснуть
+    QtConcurrent::run([dev]() {
+
+
+        bool success = false;
+        DEVINST currentDevInst = dev.devInst;
+        for (int depth = 0; depth < 8 && !success; ++depth) {
+            // 2️⃣ Поднимаемся по дереву до USBSTOR\ или USB\VID_... (это правильный devInst для eject)
+            DEVINST ejectInst = dev.devInst;
+            for (int i = 0; i < 10; ++i) {
+                WCHAR deviceId[MAX_DEVICE_ID_LEN] = {0};
+                if (CM_Get_Device_IDW(ejectInst, deviceId, MAX_DEVICE_ID_LEN, 0) != CR_SUCCESS)
+                    break;
+                QString id = QString::fromWCharArray(deviceId).toUpper();
+                if (id.contains("USBSTOR") || id.contains("USB\\VID_")) {
+                    qDebug() << "[Async] Найден подходящий узел для извлечения:" << id;
+                    break;
+                }
+                DEVINST parent;
+                if (CM_Get_Parent(&parent, ejectInst, 0) != CR_SUCCESS) break;
+                ejectInst = parent;
+            }
+
+            if (!dev.driveLetter.isEmpty()) {
+                if (!lockAndDismountVolume(dev.driveLetter)) {
+                    // ошибка
+                    return;
+                }
+                // ✔️ Отмечаем как безопасно извлечённое здесь
+                QMetaObject::invokeMethod(qApp, [dev]() {
+                    UsbMonitor::getInstance()->safelyEjectedDevices.insert(dev.path);
+                });
+            }
+
+
+            // 3️⃣ Запрос на безопасное извлечение именно USBSTOR\... или USB\VID\...
+            PNP_VETO_TYPE vetoType = PNP_VetoTypeUnknown;
+            WCHAR vetoName[MAX_PATH] = {0};
+            ULONG vetoLen = MAX_PATH;
+            CONFIGRET cres = CM_Request_Device_EjectW(ejectInst, &vetoType, vetoName, vetoLen, 0);
+
+            if (cres == CR_SUCCESS) {
+                qDebug() << "[Async] CM_Request_Device_EjectW success for devInst" << ejectInst;
+
+                // помечаем до того, как Windows пошлёт WM_DEVICECHANGE
+                QMetaObject::invokeMethod(qApp, [=]() {
+                    UsbMonitor::getInstance()->safelyEjectedDevices.insert(dev.path);
+                    QMessageBox::information(nullptr, "Успех",
+                                             "Устройство " + dev.description + " успешно извлечено.");
+                });
+                return;
+            }
+
+            qDebug() << "[Async] CM_Request_Device_EjectW failed:" << cres
+                     << "veto:" << QString::fromWCharArray(vetoName);
+
+            // Альтернатива: CM_Query_And_Remove_SubTreeW на этом же ejectInst
+            CONFIGRET cres2 = CM_Query_And_Remove_SubTreeW(ejectInst, &vetoType, vetoName, vetoLen, CM_REMOVE_NO_RESTART);
+            if (cres2 == CR_SUCCESS) {
+                qDebug() << "[Async] CM_Query_And_Remove_SubTreeW success for" << ejectInst;
+                QMetaObject::invokeMethod(qApp, [=]() {
+                    UsbMonitor::getInstance()->safelyEjectedDevices.insert(dev.path);
+                    QMessageBox::information(nullptr, "Успех",
+                                             "Устройство " + dev.description + " успешно извлечено.");
+                });
+            }
+
         }
-    }
 
-    // 2️⃣ Пробуем извлечь (с подъёмом по дереву)
-    bool success = false;
-    DEVINST currentDevInst = dev.devInst;
-
-    for (int i = 0; i < 5 && !success; ++i) {
-        WCHAR deviceId[MAX_DEVICE_ID_LEN];
-        if (CM_Get_Device_IDW(currentDevInst, deviceId, MAX_DEVICE_ID_LEN, 0) != CR_SUCCESS)
-            break;
-
-        PNP_VETO_TYPE vetoType;
-        WCHAR vetoName[MAX_PATH] = {0};
-        ULONG vetoNameLen = MAX_PATH;
-
-        CONFIGRET res = CM_Request_Device_EjectW(currentDevInst, &vetoType, vetoName, vetoNameLen, 0);
-        if (res == CR_SUCCESS) {
-            success = true;
-            safelyEjectedDevices.insert(dev.path);
-            qDebug() << "✅ Устройство безопасно извлечено:" << name;
-            QMessageBox::information(nullptr, "Успех",
-                                     "Устройство " + name + " успешно извлечено безопасным способом.");
-            break;
-        } else {
-            QString vetoReason = QString::fromWCharArray(vetoName);
-            qDebug() << "⚠️ Ошибка извлечения, код:" << res << ", veto:" << vetoReason;
+        if (!success) {
+            // Попробуем альтернативно CM_Query_And_Remove_SubTreeW (иногда срабатывает)
+            currentDevInst = dev.devInst;
+            for (int depth = 0; depth < 4 && !success; ++depth) {
+                PNP_VETO_TYPE vetoType = PNP_VetoTypeUnknown;
+                WCHAR vetoName[MAX_PATH] = {0};
+                ULONG vetoLen = MAX_PATH;
+                CONFIGRET cres2 = CM_Query_And_Remove_SubTreeW(currentDevInst, &vetoType, vetoName, vetoLen, CM_REMOVE_NO_RESTART);
+                if (cres2 == CR_SUCCESS) {
+                    success = true;
+                    qDebug() << "[Async] CM_Query_And_Remove_SubTreeW success";
+                    QMetaObject::invokeMethod(qApp, [dev]() {
+                        QMessageBox::information(nullptr, "Успех", "Устройство " + dev.description + " успешно извлечено (QueryAndRemoveSubTree).");
+                    });
+                    break;
+                } else {
+                    qDebug() << "[Async] CM_Query_And_Remove_SubTreeW failed code:" << cres2;
+                }
+                DEVINST parent;
+                if (CM_Get_Parent(&parent, currentDevInst, 0) != CR_SUCCESS) break;
+                currentDevInst = parent;
+            }
         }
 
-        DEVINST parent;
-        if (CM_Get_Parent(&parent, currentDevInst, 0) != CR_SUCCESS)
-            break;
-        currentDevInst = parent;
-    }
+        if (!dev.driveLetter.isEmpty()) {
+            // Попытка размонтирования/подготовки тома
+            if (!lockAndDismountVolume(dev.driveLetter)) {
+                qWarning() << "[Async] Не удалось подготовить том" << dev.driveLetter;
+                QMetaObject::invokeMethod(qApp, [dev]() {
+                    QMessageBox::warning(nullptr, "Ошибка",
+                                         "Не удалось подготовить том " + dev.description + " к извлечению. Закройте все файлы и попробуйте снова.");
+                });
+                return;
+            }
 
-    if (!success) {
-        qWarning() << "❌ Не удалось безопасно извлечь устройство:" << name;
-        QMessageBox::warning(nullptr, "Ошибка",
-                             "Не удалось извлечь устройство " + name +
-                                 ". Возможно, оно используется системой или другими программами.");
-    }
+            // Небольшая пауза чтобы система успела отпустить хендлы
+            Sleep(50);
+        }
+
+        if (success) {
+
+            // Отмечаем как успешно извлечённое (если у тебя есть коллекция safelyEjectedDevices)
+            // Делать изменение коллекции в GUI-потоке:
+            QMetaObject::invokeMethod(qApp, [dev]() {
+                // пример: UsbMonitor::getInstance()->markSafelyEjected(dev.path);
+                qDebug() << "[Async->GUI] отметка как безопасно извлеченное:" << dev.path;
+            });
+        }
+    }); // QtConcurrent::run
 }
+
+
 
 
 

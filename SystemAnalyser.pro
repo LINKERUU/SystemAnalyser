@@ -22,5 +22,5 @@ HEADERS += \
 
 win32 {
 
-    LIBS += -L"C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64" -lsetupapi -lpowrprof -lkernel32 -lwbemuuid -lole32 -loleaut32  -luuid -lhid -lcfgmgr32
+    LIBS += -L"C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64" -lsetupapi -lpowrprof -lkernel32 -lwbemuuid -lole32 -loleaut32 -luuid -lhid -lcfgmgr32 -lrstrtmgr
 }

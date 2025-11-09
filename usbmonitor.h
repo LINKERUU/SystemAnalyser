@@ -9,6 +9,7 @@
 #include <QElapsedTimer>
 #include <hidsdi.h>
 #include <dbt.h>
+#include <QMutex>
 #include <cfgmgr32.h> // Для DEVINST
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "hid.lib")
@@ -33,6 +34,7 @@ public:
     static UsbMonitor* getInstance();
     QList<UsbDevice> getUsbDevices();
     bool registerNotifications(HWND hWnd);
+    void toggleGlobalEjectBlock(bool enable);
     bool handleDeviceChange(UINT message, WPARAM wParam);
 public slots:
     void ejectSafe(const UsbDevice& dev);
