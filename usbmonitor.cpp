@@ -257,13 +257,16 @@ bool UsbMonitor::handleDeviceChange(UINT message, WPARAM wParam)
     switch (wParam)
     {
     case DBT_DEVICEARRIVAL:
-        qDebug() << "🔌 Подключено новое устройство";
         m_devices = findUsbDevices();
+        emit deviceAdded();
         emit devicesChanged();
         break;
 
+    case DBT_DEVICEREMOVEPENDING:
+        emit deviceRemovedPending();
+        break;
+
     case DBT_DEVICEREMOVECOMPLETE:
-        qDebug() << "❌ Устройство удалено";
         {
             // Получаем текущий список устройств
             QList<UsbDevice> current = findUsbDevices();
@@ -281,7 +284,7 @@ bool UsbMonitor::handleDeviceChange(UINT message, WPARAM wParam)
                     QString safeDrive = oldDev.driveLetter;
                     QString safePath = oldDev.path;
 
-                    // ⚙️ защита от битых данных — иногда QString внутри структуры уже невалиден
+                    // ⚙защита от битых данных — иногда QString внутри структуры уже невалиден
                     auto sanitize = [](const QString &s) -> QString {
                         if (s.isEmpty()) return "";
                         QString trimmed = s.trimmed();
@@ -298,22 +301,21 @@ bool UsbMonitor::handleDeviceChange(UINT message, WPARAM wParam)
                     if (!safeDrive.isEmpty())
                         name += " (" + safeDrive + ")";
 
-                    // 💥 фильтруем битые имена — двойная защита
+                    // фильтруем битые имена — двойная защита
                     if (!isValidDeviceName(name)) {
-                        qDebug() << "⚙️ Пропущено битое уведомление:" << name;
                         continue;
                     }
 
                     if (safelyEjectedDevices.contains(oldDev.path) ||
                         safelyEjectedDevices.contains(oldDev.description))
                     {
-                        qDebug() << "✅ Устройство было безопасно извлечено:" << name;
+
                         safelyEjectedDevices.remove(oldDev.path);
                         safelyEjectedDevices.remove(oldDev.description);
                         continue;
                     }
 
-                    // 🧠 Показываем сообщение безопасно через очередь GUI (на случай фоновых сигналов)
+                    // Показываем сообщение безопасно через очередь GUI (на случай фоновых сигналов)
                     QMetaObject::invokeMethod(qApp, [name]() {
                         QMessageBox::warning(nullptr,
                                              "Небезопасное извлечение!",
@@ -327,6 +329,7 @@ bool UsbMonitor::handleDeviceChange(UINT message, WPARAM wParam)
             // Обновляем текущий список устройств
             m_devices = current;
             emit devicesChanged();
+            emit deviceRemoved();
         }
         break;
 
@@ -385,14 +388,19 @@ bool lockAndDismountVolume(const QString& driveLetter)
     // Закрываем дескриптор — система должна отпустить объем
     DeviceIoControl(hVolume, FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &bytesReturned, nullptr);
     CloseHandle(hVolume);
-
-    qDebug() << "✅ Том заблокирован, размонтирован и готов к извлечению:" << path;
     return true;
 }
 
 // Унифицированная и асинхронная ejectSafe — для HID и для USB-накопителей
 void UsbMonitor::ejectSafe(const UsbDevice& dev)
 {
+
+    if (UsbMonitor::getInstance()->denyEjectDevices.contains(dev.path)) {
+        QMessageBox::warning(nullptr, "Ограничение",
+                             "Безопасное извлечение устройства \"" + dev.description + "\" заблокировано.");
+        return;
+    }
+
     QMetaObject::invokeMethod(qApp, [dev]() {
         UsbMonitor::getInstance()->safelyEjectedDevices.insert(dev.path);
         UsbMonitor::getInstance()->safelyEjectedDevices.insert(dev.description);
@@ -400,7 +408,6 @@ void UsbMonitor::ejectSafe(const UsbDevice& dev)
 
     QString name = dev.description;
     if (!dev.driveLetter.isEmpty()) name += " (" + dev.driveLetter + ")";
-    qDebug() << "[Async] Попытка безопасного извлечения устройства" << name;
 
     // Запускаем всю работу в фоновой задаче — UI не будет виснуть
     QtConcurrent::run([dev]() {
@@ -417,7 +424,6 @@ void UsbMonitor::ejectSafe(const UsbDevice& dev)
                     break;
                 QString id = QString::fromWCharArray(deviceId).toUpper();
                 if (id.contains("USBSTOR") || id.contains("USB\\VID_")) {
-                    qDebug() << "[Async] Найден подходящий узел для извлечения:" << id;
                     break;
                 }
                 DEVINST parent;
@@ -444,7 +450,6 @@ void UsbMonitor::ejectSafe(const UsbDevice& dev)
             CONFIGRET cres = CM_Request_Device_EjectW(ejectInst, &vetoType, vetoName, vetoLen, 0);
 
             if (cres == CR_SUCCESS) {
-                qDebug() << "[Async] CM_Request_Device_EjectW success for devInst" << ejectInst;
 
                 // помечаем до того, как Windows пошлёт WM_DEVICECHANGE
                 QMetaObject::invokeMethod(qApp, [=]() {
@@ -455,13 +460,9 @@ void UsbMonitor::ejectSafe(const UsbDevice& dev)
                 return;
             }
 
-            qDebug() << "[Async] CM_Request_Device_EjectW failed:" << cres
-                     << "veto:" << QString::fromWCharArray(vetoName);
-
             // Альтернатива: CM_Query_And_Remove_SubTreeW на этом же ejectInst
             CONFIGRET cres2 = CM_Query_And_Remove_SubTreeW(ejectInst, &vetoType, vetoName, vetoLen, CM_REMOVE_NO_RESTART);
             if (cres2 == CR_SUCCESS) {
-                qDebug() << "[Async] CM_Query_And_Remove_SubTreeW success for" << ejectInst;
                 QMetaObject::invokeMethod(qApp, [=]() {
                     UsbMonitor::getInstance()->safelyEjectedDevices.insert(dev.path);
                     QMessageBox::information(nullptr, "Успех",
@@ -481,13 +482,10 @@ void UsbMonitor::ejectSafe(const UsbDevice& dev)
                 CONFIGRET cres2 = CM_Query_And_Remove_SubTreeW(currentDevInst, &vetoType, vetoName, vetoLen, CM_REMOVE_NO_RESTART);
                 if (cres2 == CR_SUCCESS) {
                     success = true;
-                    qDebug() << "[Async] CM_Query_And_Remove_SubTreeW success";
                     QMetaObject::invokeMethod(qApp, [dev]() {
                         QMessageBox::information(nullptr, "Успех", "Устройство " + dev.description + " успешно извлечено (QueryAndRemoveSubTree).");
                     });
                     break;
-                } else {
-                    qDebug() << "[Async] CM_Query_And_Remove_SubTreeW failed code:" << cres2;
                 }
                 DEVINST parent;
                 if (CM_Get_Parent(&parent, currentDevInst, 0) != CR_SUCCESS) break;
@@ -515,30 +513,66 @@ void UsbMonitor::ejectSafe(const UsbDevice& dev)
             // Отмечаем как успешно извлечённое (если у тебя есть коллекция safelyEjectedDevices)
             // Делать изменение коллекции в GUI-потоке:
             QMetaObject::invokeMethod(qApp, [dev]() {
-                // пример: UsbMonitor::getInstance()->markSafelyEjected(dev.path);
-                qDebug() << "[Async->GUI] отметка как безопасно извлеченное:" << dev.path;
+
             });
         }
-    }); // QtConcurrent::run
+    });
 }
 
 
 
+static QMap<QString, HANDLE> lockedVolumes; // Храним открытые хендлы заблокированных томов
+
+bool lockDeviceVolume(const QString& driveLetter) {
+    QString path = "\\\\.\\" + driveLetter.left(2); // например "\\\\.\\E:"
+    HANDLE h = CreateFileW((LPCWSTR)path.utf16(),
+                           GENERIC_READ,
+                           FILE_SHARE_READ, // без FILE_SHARE_WRITE, чтобы заблокировать
+                           nullptr,
+                           OPEN_EXISTING,
+                           0,
+                           nullptr);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        qWarning() << "Не удалось заблокировать том:" << driveLetter << "ошибка" << GetLastError();
+        return false;
+    }
+
+    lockedVolumes.insert(driveLetter, h);
+    return true;
+}
+
+void unlockDeviceVolume(const QString& driveLetter) {
+    if (lockedVolumes.contains(driveLetter)) {
+        CloseHandle(lockedVolumes.take(driveLetter));
+    }
+}
 
 
+bool UsbMonitor::isEjectDenied(const QString& devicePath) const {
+    return denyEjectDevices.contains(devicePath);
+}
 
-void UsbMonitor::denyEject(const UsbDevice& dev)
+void UsbMonitor::toggleEjectDenied(const QString& devicePath, bool deny)
 {
-    qDebug()<<"DDDDDDDD";
-    QString name = dev.description;
-    if (!dev.driveLetter.isEmpty()) name += " (" + dev.driveLetter + ")";
-    qDebug() << "🚫 Отказ в безопасном извлечении" << name;
-    // Симулируем отказ, показывая сообщение
-    QMessageBox::critical(nullptr, "Отказ в извлечении",
-                          "Извлечение устройства \"" + name + "\" невозможно.\n\n"
-                                                              "Возможные причины:\n"
-                                                              "• Устройство используется другими приложениями\n"
-                                                              "• Файлы открыты на устройстве\n"
-                                                              "• Системные ограничения\n\n"
-                                                              "Закройте все программы и попробуйте снова.");
+    if (deny) {
+        denyEjectDevices.insert(devicePath);
+
+        // Найдём устройство по пути и заблокируем том
+        for (const auto& dev : getUsbDevices()) {
+            if (dev.path == devicePath && !dev.driveLetter.isEmpty()) {
+                lockDeviceVolume(dev.driveLetter);
+                break;
+            }
+        }
+    } else {
+        denyEjectDevices.remove(devicePath);
+
+        for (const auto& dev : getUsbDevices()) {
+            if (dev.path == devicePath && !dev.driveLetter.isEmpty()) {
+                unlockDeviceVolume(dev.driveLetter);
+                break;
+            }
+        }
+    }
 }

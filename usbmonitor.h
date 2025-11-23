@@ -31,6 +31,8 @@ struct UsbDevice {
 class UsbMonitor : public QObject {
     Q_OBJECT
 public:
+    bool isEjectDenied(const QString& devicePath) const;
+    void toggleEjectDenied(const QString& devicePath, bool deny);
     static UsbMonitor* getInstance();
     QList<UsbDevice> getUsbDevices();
     bool registerNotifications(HWND hWnd);
@@ -38,10 +40,14 @@ public:
     bool handleDeviceChange(UINT message, WPARAM wParam);
 public slots:
     void ejectSafe(const UsbDevice& dev);
-    void denyEject(const UsbDevice& dev);
 signals:
     void devicesChanged();
+    void deviceAdded();
+    void deviceRemoved();
+    void deviceRemovedPending();
+
 private:
+     QSet<QString> denyEjectDevices;
     QSet<QString> safelyEjectedDevices;
     QList<UsbDevice> m_devices;
     UsbMonitor(QObject* parent = nullptr);

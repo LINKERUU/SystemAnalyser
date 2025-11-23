@@ -151,12 +151,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     // 3. Регистрируем уведомления
     // Ошибка: 'registerForDeviceNotifications'
     monitor->registerNotifications(hWnd);
+    lastKnownDevices = monitor->getUsbDevices();
     // 5. Первоначальное заполнение таблицы
     // Ошибка: 'no matching function for call to updateUsbTable()'
     // Исправлено: Вызываем с параметром, который она ожидает.
     updateUsbTable(monitor->getUsbDevices());
     connect(UsbMonitor::getInstance(), &UsbMonitor::devicesChanged,
             this, &MainWindow::onDevicesChanged);
+    connect(UsbMonitor::getInstance(), &UsbMonitor::deviceAdded, this, [this]() {
+        startAnimation("Welcome",1,12,120,false,true,Welcome,1);
+    });
+
+    connect(UsbMonitor::getInstance(), &UsbMonitor::deviceRemoved, this, [this]() {
+        startAnimation("FrameSad", 1, 5, 300, false, false, Sad,1);
+    });
+
+
     connect(pciTable->horizontalHeader(), &QHeaderView::sectionResized, this, [=](int logicalIndex, int newSize) {
         if (logicalIndex == 3) {
             QFontMetrics metrics(pciTable->font());
@@ -227,9 +237,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), currentFrame(0), 
     QAction *quitAction = trayMenu->addAction("Выход");
     connect(quitAction, &QAction::triggered, qApp, &QCoreApplication::quit);
     trayIcon->setContextMenu(trayMenu);
-    // Add hotkey to stop hidden surveillance
-    QShortcut *stopSurveillanceShortcut = new QShortcut(QKeySequence("Ctrl+Shift+S"), this);
-    connect(stopSurveillanceShortcut, &QShortcut::activated, this, &MainWindow::stopHiddenSurveillance);
+
 }
 MainWindow::~MainWindow() {}
 
@@ -330,32 +338,27 @@ void MainWindow::setupUsbInfoPanel() {
     usbTable->setAlternatingRowColors(true);
     usbTable->resizeColumnsToContents(); // дополнительно подгоняем ширину под содержимое перед растяжкой
     QPushButton *backButton = new QPushButton(" Назад", usbInfoPanel);
-    backButton->setFixedSize(120, 40);
+    backButton->setFixedSize(160, 40);
     backButton->setStyleSheet(R"(
-        QPushButton {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 rgba(74, 144, 226, 240),
-                stop:1 rgba(53, 122, 189, 220));
-            color: white;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: bold;
-            border: none;
-            padding: 4px 12px;
-        }
-        QPushButton:hover {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 rgba(53, 122, 189, 255),
-                stop:1 rgba(44, 90, 160, 240));
-        }
-        QPushButton:pressed {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 rgba(44, 90, 160, 240),
-                stop:1 rgba(74, 144, 226, 200));
-        }
+            QPushButton {
+                background-color: rgba(74, 144, 226, 220);
+                color: white;
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(53, 122, 189, 220);
+            }
+            QPushButton:pressed {
+                background-color: rgba(44, 90, 160, 240);
+            }
+            QPushButton:disabled {
+                background-color: rgba(74, 144, 226, 100);
+            }
     )");
     QPushButton *safeRemoveBtn = new QPushButton("Безопасное извлечение", usbInfoPanel);
-    QPushButton *denyRemoveBtn = new QPushButton("Отказ безопасного извлечения", usbInfoPanel);
+    QPushButton *denyRemoveBtn = new QPushButton("Выкл безопасного извлечения", usbInfoPanel);
     QList<QPushButton*> eventButtons = { safeRemoveBtn, denyRemoveBtn };
     for (auto *btn : eventButtons) {
         btn->setMinimumWidth(220);
@@ -366,7 +369,7 @@ void MainWindow::setupUsbInfoPanel() {
                 background-color: rgba(74, 144, 226, 220);
                 color: white;
                 border-radius: 8px;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
             }
             QPushButton:hover {
@@ -402,7 +405,18 @@ void MainWindow::setupUsbInfoPanel() {
         bool hasSelection = !usbTable->selectedItems().isEmpty();
         safeRemoveBtn->setEnabled(hasSelection);
         denyRemoveBtn->setEnabled(hasSelection);
+
+        if (!hasSelection) return;
+        int row = usbTable->currentRow();
+        QList<UsbDevice> devices = UsbMonitor::getInstance()->getUsbDevices();
+        if (row >= 0 && row < devices.size()) {
+            const UsbDevice& dev = devices[row];
+            bool denied = UsbMonitor::getInstance()->isEjectDenied(dev.path);
+            denyRemoveBtn->setText(denied ? "Вкл безопасное извлечение"
+                                          : "Выкл безопасное извлечение");
+        }
     });
+
     connect(safeRemoveBtn, &QPushButton::clicked, this, [=]() {
         int row = usbTable->currentRow();
         QList<UsbDevice> devices = UsbMonitor::getInstance()->getUsbDevices();
@@ -412,14 +426,25 @@ void MainWindow::setupUsbInfoPanel() {
         }
     });
 
+    // Вместо старого connect(denyRemoveBtn, ...) вставь:
     connect(denyRemoveBtn, &QPushButton::clicked, this, [=]() {
         int row = usbTable->currentRow();
         QList<UsbDevice> devices = UsbMonitor::getInstance()->getUsbDevices();
         if (row >= 0 && row < devices.size()) {
             const UsbDevice& dev = devices[row];
-            UsbMonitor::getInstance()->denyEject(dev);
+            bool denied = UsbMonitor::getInstance()->isEjectDenied(dev.path);
+            UsbMonitor::getInstance()->toggleEjectDenied(dev.path, !denied);
+
+            // 🔁 Меняем текст кнопки при переключении
+            denyRemoveBtn->setText(!denied ? "Вкл безопасное извлечение" : "Выкл безопасное извлечение");
+
+            QString msg = !denied
+                              ? "Устройство \"" + dev.description + "\" теперь заблокировано от безопасного извлечения."
+                              : "Устройство \"" + dev.description + "\" снова можно безопасно извлечь.";
+            QMessageBox::information(nullptr, "Состояние изменено", msg);
         }
     });
+
 
     usbInfoPanel->hide();
 }
@@ -439,11 +464,16 @@ void MainWindow::activateUsbPanel() {
     currentAnimationType = None;
     drawBackground();
 }
+
 void MainWindow::onDevicesChanged()
 {
     QList<UsbDevice> devices = UsbMonitor::getInstance()->getUsbDevices();
     updateUsbTable(devices);
+    lastKnownDevices = devices;
 }
+
+
+
 void MainWindow::hideUsbInfo() {
     lab1Activated = false;
     usbInfoPanel->hide();
@@ -460,20 +490,20 @@ void MainWindow::updateUsbTable(const QList<UsbDevice>& devices)
     int row = 0;
     for (const auto& dev : devices)
     {
-        // ... (DEBUG ВЫВОД)
-        // Тип устройства ("storage" или "hid")
+        // По умолчанию безопасное извлечение ВКЛ
+        UsbMonitor::getInstance()->toggleEjectDenied(dev.path, false);
+
         QTableWidgetItem *typeItem = new QTableWidgetItem(dev.type.toUpper());
-        usbTable->setItem(row, 0, typeItem); // <-- ИСПРАВЛЕНО
-        // Описание (Friendly Name / Device Description)
+        usbTable->setItem(row, 0, typeItem);
         QTableWidgetItem *descItem = new QTableWidgetItem(dev.description);
-        usbTable->setItem(row, 1, descItem); // <-- ИСПРАВЛЕНО
-        // Буква диска (только для "storage")
+        usbTable->setItem(row, 1, descItem);
         QString drive = (dev.type == "USB-накопитель") ? dev.driveLetter : "-";
         QTableWidgetItem *driveItem = new QTableWidgetItem(drive);
         usbTable->setItem(row, 2, driveItem);
         row++;
     }
 }
+
 
 void MainWindow::startAnimation(const QString &prefix, int start, int end, int delay,
                                 bool infinite = false, bool reverse = false, AnimationType type = None,int count=1) {
@@ -574,6 +604,42 @@ void MainWindow::setupPowerInfoPanel() {
     connect(hibernateButton, &QPushButton::clicked, powerMonitor, &PowerMonitor::triggerHibernate);
     connect(backButton, &QPushButton::clicked, this, &MainWindow::hidePowerInfo);
     powerInfoPanel->hide();
+}
+
+void MainWindow::activatePowerInfoPanel() {
+    lab1Activated = true;
+    for (QPushButton *btn : labButtons) {
+        btn->hide();
+    }
+    powerInfoPanel->show();
+    drawBackground();
+    frameTimer->stop();
+    resetTimer->stop();
+    if (powerMonitor->getPowerSourceType() == "Сеть") {
+        isEatAnimationInfinite = true;
+        startEatAnimation();
+    }
+}
+
+void MainWindow::showPowerInfo() {
+    frameTimer->stop();
+    resetTimer->stop();
+    currentAnimationType = Boredom;
+    startBoredomAnimation();
+}
+void MainWindow::hidePowerInfo() {
+    lab1Activated = false;
+    frameTimer->stop();
+    resetTimer->stop();
+    powerInfoPanel->hide();
+    for (QPushButton *btn : labButtons) {
+        btn->show();
+    }
+    currentAnimationType = None;
+    drawBackground();
+}
+void MainWindow::updatePowerMode(const QString &mode) {
+    powerModeStatusLabel->setText(QString("Режим работы: %1").arg(mode));
 }
 
 
@@ -699,6 +765,67 @@ void MainWindow::setupPCIInfoPanel() {
     connect(backButton, &QPushButton::clicked, this, &MainWindow::hidePCIInfo);
     pciInfoPanel->hide();
 }
+
+void MainWindow::activatePCIInfoPanel() {
+    lab1Activated = false;
+    powerInfoPanel->hide();
+    for (QPushButton *btn : labButtons) {
+        btn->hide();
+    }
+    pciInfoPanel->show();
+    startPointerAnimation();
+    QList<PCIDevice> devices = pciMonitor->getPCIDevices();
+    pciTable->setRowCount(devices.size());
+    QFont tableFont("Arial", 14);
+    QFontMetrics fontMetrics(tableFont);
+    const int maxNameWidth = 290;
+    for (int i = 0; i < devices.size(); ++i) {
+        QTableWidgetItem *numberItem = new QTableWidgetItem(QString::number(i + 1));
+        numberItem->setTextAlignment(Qt::AlignCenter);
+        pciTable->setItem(i, 0, numberItem);
+        QTableWidgetItem *vendorItem = new QTableWidgetItem(devices[i].vendorID);
+        vendorItem->setTextAlignment(Qt::AlignCenter);
+        pciTable->setItem(i, 1, vendorItem);
+        QTableWidgetItem *deviceItem = new QTableWidgetItem(devices[i].deviceID);
+        deviceItem->setTextAlignment(Qt::AlignCenter);
+        pciTable->setItem(i, 2, deviceItem);
+        QString nameText = devices[i].friendlyName;
+        QString truncatedName = fontMetrics.elidedText(nameText, Qt::ElideRight, maxNameWidth);
+        QTableWidgetItem *nameItem = new QTableWidgetItem(truncatedName);
+        nameItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        nameItem->setData(Qt::UserRole, nameText);
+        nameItem->setToolTip(nameText);
+        pciTable->setItem(i, 3, nameItem);
+        QString busText = devices[i].instanceID;
+        QTableWidgetItem *busItem = new QTableWidgetItem(busText);
+        busItem->setTextAlignment(Qt::AlignCenter);
+        busItem->setData(Qt::UserRole, busText);
+        busItem->setToolTip(busText);
+        pciTable->setItem(i, 4, busItem);
+    }
+    pciTable->resizeColumnsToContents();
+    pciTable->resizeRowsToContents();
+    drawBackground();
+}
+
+void MainWindow::showPCIInfo() {
+    frameTimer->stop();
+    resetTimer->stop();
+    startBasketballAnimation();
+}
+void MainWindow::hidePCIInfo() {
+    lab1Activated = false;
+    frameTimer->stop();
+    resetTimer->stop();
+    isPointerAnimationInfinite = false;
+    pciInfoPanel->hide();
+    for (QPushButton *btn : labButtons) {
+        btn->show();
+    }
+    currentAnimationType = None;
+    drawBackground();
+}
+
 
 void MainWindow::setupWebcamPanel() {
     QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
@@ -848,367 +975,6 @@ void MainWindow::hideOverlay() {
     previewWidget->show();
 }
 
-
-void MainWindow::showPCIInfo() {
-    frameTimer->stop();
-    resetTimer->stop();
-    startBasketballAnimation();
-}
-void MainWindow::hidePCIInfo() {
-    lab1Activated = false;
-    frameTimer->stop();
-    resetTimer->stop();
-    isPointerAnimationInfinite = false;
-    pciInfoPanel->hide();
-    for (QPushButton *btn : labButtons) {
-        btn->show();
-    }
-    currentAnimationType = None;
-    drawBackground();
-}
-void MainWindow::loadFrames(const QString &prefix, int start, int end,int countRepeat=1, bool reverse = false,bool reverse_only=false) {
-    framePaths.clear();
-    if(!reverse_only){
-        for(int j=0;j<countRepeat;j++){
-            for (int i = start; i <= end; ++i)
-                framePaths << ASSETS_PATH + QString("%1%2.svg").arg(prefix).arg(i);
-        }
-    }
-    if (reverse) {
-        for (int i = end - 1; i > start; --i)
-            framePaths << ASSETS_PATH + QString("%1%2.svg").arg(prefix).arg(i);
-    }
-}
-
-void MainWindow::drawBackground() {
-    QPixmap pix(1245, 720);
-    pix.fill(Qt::transparent);
-    QPainter painter(&pix);
-
-    // Фон
-    QString bgPath = ASSETS_PATH + "krosh_house.jpg";
-    if (QFile::exists(bgPath)) {
-        QPixmap bg(bgPath);
-        painter.drawPixmap(pix.rect(), bg);
-    } else {
-        qDebug() << "Background image not found:" << bgPath;
-        pix.fill(Qt::lightGray);
-    }
-
-    // Определяем, какой кадр рисовать
-    // Определяем, какой кадр рисовать
-    QString framePath;
-    bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
-    bool usbVisible = usbInfoPanel ? usbInfoPanel->isVisible() : false;
-    bool pciVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
-
-    if (webcamVisible) {
-        framePath = isCameraOn ? ASSETS_PATH + "Glasses6.svg" : ASSETS_PATH + "Frame1.svg";
-    } else {
-        framePath = ASSETS_PATH + "Frame1.svg";
-    }
-
-    if (QFile::exists(framePath)) {
-        QSvgRenderer renderer(framePath);
-        if (renderer.isValid()) {
-            QSize kroshSize = (webcamVisible && isCameraOn) ? QSize(350, 386) : QSize(276, 386);
-            bool panelVisible = pciVisible || webcamVisible;
-
-            qreal xPos = panelVisible ? 30 : (lab1Activated || usbVisible ? 250 : (pix.width() - kroshSize.width()) / 2.0);
-            QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
-            renderer.render(&painter, targetRect);
-        } else {
-            qDebug() << "Invalid SVG content in:" << framePath;
-        }
-    } else {
-        qDebug() << "Frame not found:" << framePath;
-    }
-    animationLabel->setPixmap(pix);
-}
-
-void MainWindow::updateFrame() {
-    if (currentFrame >= framePaths.size()) {
-        if ((isEatAnimationInfinite && currentAnimationType == Eat) || currentAnimationType == Pointer) {
-            currentFrame = 0;
-        } else if (currentAnimationType == Funny) {
-            // Завершили Funny - активируем панель
-            activateUsbPanel();
-            frameTimer->stop();
-            currentAnimationType = None;
-            return;
-        }
-        else {
-            frameTimer->stop();
-            if (currentAnimationType == Glasses) {
-                isCameraOn = !isCameraOn;
-                drawBackground(); // Теперь будет Frame1 или Glasses6
-            } else if (currentAnimationType == Boredom || currentAnimationType == Basketball) {
-                drawBackground();
-            } else {
-                drawBackground();
-            }
-            return;
-        }
-    }
-
-    QPixmap pix(1245, 720);
-    pix.fill(Qt::transparent);
-    QPainter painter(&pix);
-
-    QString bgPath = ASSETS_PATH + "krosh_house.jpg";
-    if (QFile::exists(bgPath)) {
-        QPixmap bg(bgPath);
-        painter.drawPixmap(pix.rect(), bg);
-    }
-
-    QString currentPath = framePaths[currentFrame];
-    QSvgRenderer renderer(currentPath);
-
-    // Размеры для разных анимаций
-    QSize kroshSize(276, 386);
-    if (currentAnimationType == Basketball || currentAnimationType == Jumping) {
-        kroshSize = QSize(400, 386);
-    } else if (currentAnimationType == Glasses) {
-        kroshSize = QSize(350, 386); // Glasses анимация тоже шире
-    }
-    else if (currentAnimationType == Funny) {
-        kroshSize = QSize(380, 416); // Glasses анимация тоже шире
-    }
-
-    bool panelVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
-    bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
-    bool usbVisible = usbInfoPanel ? usbInfoPanel->isVisible() : false;
-    qreal xPos = (panelVisible || webcamVisible) ? 30 : (lab1Activated || usbVisible ? 250 : (pix.width() - kroshSize.width()) / 2.0);
-    QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
-    renderer.render(&painter, targetRect);
-
-    animationLabel->setPixmap(pix);
-    currentFrame++;
-}
-
-void MainWindow::startFunnyAnimation() {
-    startAnimation("Funny", 1, 12, 100, false, false, Funny,3);
-}
-void MainWindow::startSadAnimation() {
-    startAnimation("FrameSad", 1, 5, 200, false, false, Sad);
-}
-void MainWindow::startEatAnimation() {
-    startAnimation("Frame", 1, 43, 80, true, false, Eat);
-}
-void MainWindow::startJumpingAnimation() {
-    startAnimation("Jumping",1,5,80,false,true,Jumping,2);
-}
-void MainWindow::startWelcomeAnimation() {
-    startAnimation("Welcome",1,12,70,false,true,Welcome);
-}
-void MainWindow::startPointerAnimation() {
-    startAnimation("Pointer",1,4,300,false,true,Pointer);
-}
-void MainWindow::startBoredomAnimation() {
-    startAnimation("Boring",1,4,130,false,true,Boredom,2);
-    const int frameDelay = 130;
-    const int totalFrames = framePaths.size();
-    const int repetitions = 3;
-    frameTimer->start(frameDelay);
-    for (int i = 1; i < repetitions; ++i) {
-        QTimer::singleShot(i * totalFrames * frameDelay, this, [this, frameDelay]() {
-            if (currentAnimationType == Boredom && !lab1Activated) {
-                currentFrame = 0;
-                frameTimer->start(frameDelay);
-            }
-        });
-    }
-    QTimer::singleShot(repetitions * totalFrames * frameDelay, this, [this]() {
-        if (currentAnimationType == Boredom) {
-            currentAnimationType = None;
-            if (!lab1Activated) {
-                activatePowerInfoPanel();
-            } else {
-                drawBackground();
-            }
-        }
-    });
-}
-void MainWindow::startBasketballAnimation() {
-    startAnimation("Basketball",1,8,130,false,false,Basketball);
-    const int frameDelay = 130;
-    const int totalFrames = framePaths.size();
-    const int repetitions = 3;
-    frameTimer->start(frameDelay);
-    for (int i = 1; i < repetitions; ++i) {
-        QTimer::singleShot(i * totalFrames * frameDelay, this, [this, frameDelay]() {
-            if (currentAnimationType == Basketball) {
-                currentFrame = 0;
-                frameTimer->start(frameDelay);
-            }
-        });
-    }
-    QTimer::singleShot(repetitions * totalFrames * frameDelay, this, [this]() {
-        if (currentAnimationType == Basketball) {
-            currentAnimationType = None;
-            frameTimer->stop();
-            drawBackground();
-            QTimer::singleShot(100, this, [this]() {
-                startPointerAnimation();
-                activatePCIInfoPanel();
-            });
-        } else {
-            frameTimer->stop();
-            drawBackground();
-        }
-    });
-}
-void MainWindow::startBlinkAnimation() {
-    AnimationType prevType = currentAnimationType;
-    startAnimation("Blinking",1,3,100,false,true,Blink);
-    disconnect(resetTimer, &QTimer::timeout, this, nullptr);
-    connect(resetTimer, &QTimer::timeout, this, [this, prevType]() {
-        restorePreviousAnimation(prevType);
-    });
-}
-
-void MainWindow::startGlassesAnimation(bool cameraOn) {
-    frameTimer->stop();
-    resetTimer->stop();
-
-    // Если включаем камеру: от Glasses6 к Frame1 (reverse = true)
-    // Если выключаем камеру: от Frame1 к Glasses6 (reverse = false)
-    bool reverse = cameraOn;
-    startAnimation("Glasses", 1, 6, 150, false, reverse, Glasses,!reverse);
-}
-
-void MainWindow::restorePreviousAnimation(AnimationType prevType) {
-    currentAnimationType = prevType;
-    frameTimer->stop();
-    resetTimer->stop();
-    switch (prevType) {
-    case Eat:
-        startEatAnimation();
-        break;
-    case Sad:
-        startSadAnimation();
-        break;
-    case Jumping:
-        startJumpingAnimation();
-        break;
-    case Boredom:
-        startBoredomAnimation();
-        break;
-    case Basketball:
-        startBasketballAnimation();
-        break;
-    case Funny:
-        startFunnyAnimation();
-        break;
-    case Pointer:
-        if (isPointerAnimationInfinite) {
-            startPointerAnimation();
-        } else {
-            drawBackground();
-        }
-        break;
-
-    case None:
-    case Welcome:
-    case Blink:
-        drawBackground();
-        break;
-    }
-}
-void MainWindow::activatePowerInfoPanel() {
-    lab1Activated = true;
-    for (QPushButton *btn : labButtons) {
-        btn->hide();
-    }
-    powerInfoPanel->show();
-    drawBackground();
-    frameTimer->stop();
-    resetTimer->stop();
-    if (powerMonitor->getPowerSourceType() == "Сеть") {
-        isEatAnimationInfinite = true;
-        startEatAnimation();
-    }
-}
-void MainWindow::activatePCIInfoPanel() {
-    lab1Activated = false;
-    powerInfoPanel->hide();
-    for (QPushButton *btn : labButtons) {
-        btn->hide();
-    }
-    pciInfoPanel->show();
-    startPointerAnimation();
-    QList<PCIDevice> devices = pciMonitor->getPCIDevices();
-    pciTable->setRowCount(devices.size());
-    QFont tableFont("Arial", 14);
-    QFontMetrics fontMetrics(tableFont);
-    const int maxNameWidth = 290;
-    for (int i = 0; i < devices.size(); ++i) {
-        QTableWidgetItem *numberItem = new QTableWidgetItem(QString::number(i + 1));
-        numberItem->setTextAlignment(Qt::AlignCenter);
-        pciTable->setItem(i, 0, numberItem);
-        QTableWidgetItem *vendorItem = new QTableWidgetItem(devices[i].vendorID);
-        vendorItem->setTextAlignment(Qt::AlignCenter);
-        pciTable->setItem(i, 1, vendorItem);
-        QTableWidgetItem *deviceItem = new QTableWidgetItem(devices[i].deviceID);
-        deviceItem->setTextAlignment(Qt::AlignCenter);
-        pciTable->setItem(i, 2, deviceItem);
-        QString nameText = devices[i].friendlyName;
-        QString truncatedName = fontMetrics.elidedText(nameText, Qt::ElideRight, maxNameWidth);
-        QTableWidgetItem *nameItem = new QTableWidgetItem(truncatedName);
-        nameItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        nameItem->setData(Qt::UserRole, nameText);
-        nameItem->setToolTip(nameText);
-        pciTable->setItem(i, 3, nameItem);
-        QString busText = devices[i].instanceID;
-        QTableWidgetItem *busItem = new QTableWidgetItem(busText);
-        busItem->setTextAlignment(Qt::AlignCenter);
-        busItem->setData(Qt::UserRole, busText);
-        busItem->setToolTip(busText);
-        pciTable->setItem(i, 4, busItem);
-    }
-    pciTable->resizeColumnsToContents();
-    pciTable->resizeRowsToContents();
-    drawBackground();
-}
-void MainWindow::showPowerInfo() {
-    frameTimer->stop();
-    resetTimer->stop();
-    currentAnimationType = Boredom;
-    startBoredomAnimation();
-}
-void MainWindow::hidePowerInfo() {
-    lab1Activated = false;
-    frameTimer->stop();
-    resetTimer->stop();
-    powerInfoPanel->hide();
-    for (QPushButton *btn : labButtons) {
-        btn->show();
-    }
-    currentAnimationType = None;
-    drawBackground();
-}
-void MainWindow::updatePowerMode(const QString &mode) {
-    powerModeStatusLabel->setText(QString("Режим работы: %1").arg(mode));
-}
-
-void MainWindow::triggerBlinkAnimation() {
-    // Не моргать, если открыта Лаба4 (webcamPanel)
-    if ((
-         webcamPanel && webcamPanel->isVisible()) ||
-        currentAnimationType == Eat || currentAnimationType == Sad || currentAnimationType == Boredom ||
-        currentAnimationType == Basketball || currentAnimationType == Pointer || currentAnimationType == Jumping
-        || currentAnimationType==Funny)
-    {
-        return; // просто выходим
-    }
-
-    frameTimer->stop();
-    startBlinkAnimation();
-}
-
-
-
-void MainWindow::checkBoredom() {}
 void MainWindow::showWebcamPanel() {
     frameTimer->stop();
     resetTimer->stop();
@@ -1337,3 +1103,290 @@ void MainWindow::toggleCamera() {
         startGlassesAnimation(false);
     }
 }
+
+void MainWindow::loadFrames(const QString &prefix, int start, int end,int countRepeat=1, bool reverse = false,bool reverse_only=false) {
+    framePaths.clear();
+    if(!reverse_only){
+        for(int j=0;j<countRepeat;j++){
+            for (int i = start; i <= end; ++i)
+                framePaths << ASSETS_PATH + QString("%1%2.svg").arg(prefix).arg(i);
+        }
+    }
+    if (reverse) {
+        for (int i = end - 1; i > start; --i)
+            framePaths << ASSETS_PATH + QString("%1%2.svg").arg(prefix).arg(i);
+    }
+}
+
+void MainWindow::drawBackground() {
+    QPixmap pix(1245, 720);
+    pix.fill(Qt::transparent);
+    QPainter painter(&pix);
+
+    // Фон
+    QString bgPath = ASSETS_PATH + "krosh_house.jpg";
+    if (QFile::exists(bgPath)) {
+        QPixmap bg(bgPath);
+        painter.drawPixmap(pix.rect(), bg);
+    } else {
+        qDebug() << "Background image not found:" << bgPath;
+        pix.fill(Qt::lightGray);
+    }
+
+    // Определяем, какой кадр рисовать
+    // Определяем, какой кадр рисовать
+    QString framePath;
+    bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
+    bool usbVisible = usbInfoPanel ? usbInfoPanel->isVisible() : false;
+    bool pciVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
+
+    if (webcamVisible) {
+        framePath = isCameraOn ? ASSETS_PATH + "Glasses6.svg" : ASSETS_PATH + "Frame1.svg";
+    } else {
+        framePath = ASSETS_PATH + "Frame1.svg";
+    }
+
+    if (QFile::exists(framePath)) {
+        QSvgRenderer renderer(framePath);
+        if (renderer.isValid()) {
+            QSize kroshSize = (webcamVisible && isCameraOn) ? QSize(350, 386) : QSize(276, 386);
+            bool panelVisible = pciVisible || webcamVisible;
+
+            qreal xPos = panelVisible ? 30 : (lab1Activated || usbVisible ? 250 : (pix.width() - kroshSize.width()) / 2.0);
+            QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
+            renderer.render(&painter, targetRect);
+        } else {
+            qDebug() << "Invalid SVG content in:" << framePath;
+        }
+    } else {
+        qDebug() << "Frame not found:" << framePath;
+    }
+    animationLabel->setPixmap(pix);
+}
+
+void MainWindow::updateFrame() {
+    if (currentFrame >= framePaths.size()) {
+        if ((isEatAnimationInfinite && currentAnimationType == Eat) || currentAnimationType == Pointer) {
+            currentFrame = 0;
+        } else if (currentAnimationType == Funny) {
+            // Завершили Funny - активируем панель
+            activateUsbPanel();
+            frameTimer->stop();
+            currentAnimationType = None;
+            return;
+        }
+        else {
+            frameTimer->stop();
+            if (currentAnimationType == Sad) {
+                // 🕒 Держим последний кадр 2 секунды
+                QTimer::singleShot(2000, this, [this]() {
+                    drawBackground();
+                    currentAnimationType = None;
+                });
+                return;
+            }
+
+
+            if (currentAnimationType == Glasses) {
+                isCameraOn = !isCameraOn;
+                drawBackground(); // Теперь будет Frame1 или Glasses6
+            } else if (currentAnimationType == Boredom || currentAnimationType == Basketball) {
+                drawBackground();
+            } else {
+                drawBackground();
+            }
+            return;
+        }
+    }
+
+    QPixmap pix(1245, 720);
+    pix.fill(Qt::transparent);
+    QPainter painter(&pix);
+
+    QString bgPath = ASSETS_PATH + "krosh_house.jpg";
+    if (QFile::exists(bgPath)) {
+        QPixmap bg(bgPath);
+        painter.drawPixmap(pix.rect(), bg);
+    }
+
+    QString currentPath = framePaths[currentFrame];
+    QSvgRenderer renderer(currentPath);
+
+    // Размеры для разных анимаций
+    QSize kroshSize(276, 386);
+    if (currentAnimationType == Basketball || currentAnimationType == Jumping) {
+        kroshSize = QSize(400, 386);
+    } else if (currentAnimationType == Glasses) {
+        kroshSize = QSize(350, 386); // Glasses анимация тоже шире
+    }
+    else if (currentAnimationType == Funny) {
+        kroshSize = QSize(380, 416); // Glasses анимация тоже шире
+    }
+
+    bool panelVisible = pciInfoPanel ? pciInfoPanel->isVisible() : false;
+    bool webcamVisible = webcamPanel ? webcamPanel->isVisible() : false;
+    bool usbVisible = usbInfoPanel ? usbInfoPanel->isVisible() : false;
+    qreal xPos = (panelVisible || webcamVisible) ? 30 : (lab1Activated || usbVisible ? 250 : (pix.width() - kroshSize.width()) / 2.0);
+    QRectF targetRect(xPos, (pix.height() - kroshSize.height()) / 2.0 + 150, kroshSize.width(), kroshSize.height());
+    renderer.render(&painter, targetRect);
+
+    animationLabel->setPixmap(pix);
+    currentFrame++;
+}
+
+void MainWindow::startTrickAnimation() {
+    startAnimation("Trick",1,32,140,false,true,Trick,2);
+}
+
+void MainWindow::startFunnyAnimation() {
+    startAnimation("Funny", 1, 12, 100, false, false, Funny,3);
+}
+void MainWindow::startSadAnimation() {
+    startAnimation("FrameSad", 1, 5, 200, false, false, Sad);
+}
+void MainWindow::startEatAnimation() {
+    startAnimation("Frame", 1, 43, 80, true, false, Eat);
+}
+void MainWindow::startJumpingAnimation() {
+    startAnimation("Jumping",1,5,80,false,true,Jumping,2);
+}
+void MainWindow::startWelcomeAnimation() {
+    startAnimation("Welcome",1,12,70,false,true,Welcome);
+}
+void MainWindow::startPointerAnimation() {
+    startAnimation("Pointer",1,4,300,false,true,Pointer);
+}
+void MainWindow::startBoredomAnimation() {
+    startAnimation("Boring",1,4,130,false,true,Boredom,2);
+    const int frameDelay = 130;
+    const int totalFrames = framePaths.size();
+    const int repetitions = 3;
+    frameTimer->start(frameDelay);
+    for (int i = 1; i < repetitions; ++i) {
+        QTimer::singleShot(i * totalFrames * frameDelay, this, [this, frameDelay]() {
+            if (currentAnimationType == Boredom && !lab1Activated) {
+                currentFrame = 0;
+                frameTimer->start(frameDelay);
+            }
+        });
+    }
+    QTimer::singleShot(repetitions * totalFrames * frameDelay, this, [this]() {
+        if (currentAnimationType == Boredom) {
+            currentAnimationType = None;
+            if (!lab1Activated) {
+                activatePowerInfoPanel();
+            } else {
+                drawBackground();
+            }
+        }
+    });
+}
+void MainWindow::startBasketballAnimation() {
+    startAnimation("Basketball",1,8,130,false,false,Basketball);
+    const int frameDelay = 130;
+    const int totalFrames = framePaths.size();
+    const int repetitions = 3;
+    frameTimer->start(frameDelay);
+    for (int i = 1; i < repetitions; ++i) {
+        QTimer::singleShot(i * totalFrames * frameDelay, this, [this, frameDelay]() {
+            if (currentAnimationType == Basketball) {
+                currentFrame = 0;
+                frameTimer->start(frameDelay);
+            }
+        });
+    }
+    QTimer::singleShot(repetitions * totalFrames * frameDelay, this, [this]() {
+        if (currentAnimationType == Basketball) {
+            currentAnimationType = None;
+            frameTimer->stop();
+            drawBackground();
+            QTimer::singleShot(100, this, [this]() {
+                startPointerAnimation();
+                activatePCIInfoPanel();
+            });
+        } else {
+            frameTimer->stop();
+            drawBackground();
+        }
+    });
+}
+void MainWindow::startBlinkAnimation() {
+    AnimationType prevType = currentAnimationType;
+    startAnimation("Blinking",1,3,100,false,true,Blink);
+    disconnect(resetTimer, &QTimer::timeout, this, nullptr);
+    connect(resetTimer, &QTimer::timeout, this, [this, prevType]() {
+        restorePreviousAnimation(prevType);
+    });
+}
+
+void MainWindow::startGlassesAnimation(bool cameraOn) {
+    frameTimer->stop();
+    resetTimer->stop();
+
+    // Если включаем камеру: от Glasses6 к Frame1 (reverse = true)
+    // Если выключаем камеру: от Frame1 к Glasses6 (reverse = false)
+    bool reverse = cameraOn;
+    startAnimation("Glasses", 1, 6, 150, false, reverse, Glasses,!reverse);
+}
+
+void MainWindow::restorePreviousAnimation(AnimationType prevType) {
+    currentAnimationType = prevType;
+    frameTimer->stop();
+    resetTimer->stop();
+    switch (prevType) {
+    case Eat:
+        startEatAnimation();
+        break;
+    case Sad:
+        startSadAnimation();
+        break;
+    case Jumping:
+        startJumpingAnimation();
+        break;
+    case Boredom:
+        startBoredomAnimation();
+        break;
+    case Basketball:
+        startBasketballAnimation();
+        break;
+    case Funny:
+        startFunnyAnimation();
+        break;
+    case Trick:
+        startTrickAnimation();
+        break;
+    case Pointer:
+        if (isPointerAnimationInfinite) {
+            startPointerAnimation();
+        } else {
+            drawBackground();
+        }
+        break;
+
+    case None:
+    case Welcome:
+    case Blink:
+        drawBackground();
+        break;
+    }
+}
+
+void MainWindow::triggerBlinkAnimation() {
+    // Не моргать, если открыта Лаба4 (webcamPanel)
+    if ((
+         webcamPanel && webcamPanel->isVisible()) ||
+        currentAnimationType == Eat || currentAnimationType == Sad || currentAnimationType == Boredom ||
+        currentAnimationType == Basketball || currentAnimationType == Pointer || currentAnimationType == Jumping
+        || currentAnimationType==Funny)
+    {
+        return; // просто выходим
+    }
+
+    frameTimer->stop();
+    startBlinkAnimation();
+}
+
+
+
+void MainWindow::checkBoredom() {}
+

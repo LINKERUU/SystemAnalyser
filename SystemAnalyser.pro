@@ -6,6 +6,7 @@ TARGET = SystemAnalyser
 TEMPLATE = app
 
 SOURCES += \
+    bluetoothmonitor.cpp \
     envirconfigpci.cpp \
     main.cpp \
     mainwindow.cpp \
@@ -14,6 +15,7 @@ SOURCES += \
     webcamera.cpp
 
 HEADERS += \
+    bluetoothmonitor.h \
     envirconfigpci.h \
     mainwindow.h \
     powermonitor.h \

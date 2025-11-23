@@ -38,7 +38,7 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
-    enum AnimationType { None, Eat, Sad, Jumping, Welcome, Blink, Boredom, Basketball, Pointer, Glasses, Funny };
+    enum AnimationType { None, Eat, Sad, Jumping, Welcome, Blink, Boredom, Basketball, Pointer, Glasses, Funny,Trick };
 
 protected:
     bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
@@ -57,6 +57,7 @@ private slots:
     void startJumpingAnimation();
     void startPointerAnimation();
     void startBlinkAnimation();
+    void startTrickAnimation();
     void restorePreviousAnimation(AnimationType prevType);
     void showPowerInfo();
     void hidePowerInfo();
@@ -97,6 +98,7 @@ private:
     QTimer *frameTimer;
     QTimer *resetTimer;
     QTimer *blinkTimer;
+    QList<UsbDevice> lastKnownDevices;
     QStringList framePaths;
     int currentFrame;
     bool isEatAnimationInfinite;
